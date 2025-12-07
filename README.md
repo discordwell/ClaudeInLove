@@ -6,7 +6,8 @@ Scam-baiter automation tool that wastes romance scammers' time with AI-powered r
 
 - **Signal Desktop integration** - Monitor and respond to scammer messages via CDP
 - **Facebook Messenger integration** - Automate messenger.com with persistent sessions
-- **ChatGPT web automation** - Free LLM responses using your ChatGPT Plus subscription
+- **Free LLM via OpenRouter** - DeepSeek R1, Qwen3, Gemini Flash, Llama 3.3 - all free!
+- **ChatGPT web automation** - Alternative using your ChatGPT Plus subscription
 - **Facebook persona scraping** - Build convincing alter ego from your own profile
 - **Suspicion detection** - Check responses before sending to avoid AI detection
 - **Human review queue** - Flag and pause suspicious conversations (persistent across restarts)
@@ -65,21 +66,44 @@ claudeinlove
 Edit `.env` to customize:
 
 ```
+# LLM Provider (openrouter = free, chatgpt = browser automation)
+LLM_PROVIDER=openrouter
+OPENROUTER_MODEL=deepseek-r1    # or: qwen3, gemini-flash, llama-3.3
+OPENROUTER_API_KEY=             # optional - get free key at openrouter.ai/keys
+
+# Platform
 SIGNAL_DEBUG_PORT=9222
+
+# Safety
 SUSPICION_THRESHOLD=0.7
 AUTO_PAUSE_ON_FLAG=true
+
+# Human-like delays
 MIN_RESPONSE_DELAY=30
 MAX_RESPONSE_DELAY=180
 ```
 
+### Free Models Available
+
+| Model | Best For |
+|-------|----------|
+| `deepseek-r1` | Best reasoning, great for conversation (default) |
+| `qwen3` | Good coder, fast responses |
+| `gemini-flash` | Google's fast model |
+| `llama-3.3` | Meta's latest, solid all-around |
+
+Test OpenRouter setup:
+```bash
+python scripts/test_openrouter.py
+```
+
 ## Usage
 
-1. Launch Signal Desktop with CDP enabled
-2. Launch ChatGPT in your browser (will prompt for login on first run)
-3. When scammers message you, ClaudeInLove will:
+1. Launch Signal Desktop with CDP enabled (or use Messenger)
+2. When scammers message you, ClaudeInLove will:
    - Store the message in SQLite
    - Build context with persona and conversation history
-   - Generate response via ChatGPT
+   - Generate response via OpenRouter (free) or ChatGPT
    - Check for AI-detection risk
    - Wait a human-like delay
    - Send the response
@@ -93,9 +117,10 @@ python scripts/review_flagged.py
 ## Architecture
 
 ```
-Signal Desktop ──┐
-                 ├─► Main Loop ─► ChatGPT Web
-Facebook Messenger┘       │
+Signal Desktop ──┐                    ┌─► OpenRouter API (free)
+                 ├─► Main Loop ─────► │
+Facebook Messenger┘       │           └─► ChatGPT Web (backup)
+                          │
                           ├─► SQLite Storage
                           ├─► Suspicion Checker
                           └─► Persona Context

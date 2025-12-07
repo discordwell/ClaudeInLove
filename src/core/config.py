@@ -34,6 +34,11 @@ class Config:
     min_response_delay: float  # Minimum seconds before responding
     max_response_delay: float  # Maximum seconds before responding
 
+    # LLM Provider
+    llm_provider: str  # "openrouter" or "chatgpt"
+    openrouter_api_key: str | None
+    openrouter_model: str
+
     @classmethod
     def load(cls, env_file: str = ".env") -> "Config":
         """Load configuration from environment variables."""
@@ -67,6 +72,11 @@ class Config:
             # Rate limiting (appear more human)
             min_response_delay=float(os.getenv("MIN_RESPONSE_DELAY", "30")),
             max_response_delay=float(os.getenv("MAX_RESPONSE_DELAY", "180")),
+
+            # LLM Provider (openrouter = free, chatgpt = browser automation)
+            llm_provider=os.getenv("LLM_PROVIDER", "openrouter"),
+            openrouter_api_key=os.getenv("OPENROUTER_API_KEY"),
+            openrouter_model=os.getenv("OPENROUTER_MODEL", "deepseek-r1"),
         )
 
     def ensure_dirs(self):
