@@ -263,3 +263,101 @@ These tactics could be semi-automated:
 - Detect gift card request → offer "balance checker" link
 - Detect tech support scenario → pivot to reverse access offer
 - Auto-generate Canarytokens via API
+
+---
+
+## Built-in Beacon System
+
+ClaudeInLove includes a beacon tracking system for logging scammer intel.
+
+### Quick Start
+
+```bash
+# 1. Start the beacon callback server
+beacon-server --host 0.0.0.0 --port 5000
+
+# 2. Create tracking tokens via CLI
+create-beacon --base-url https://yourdomain.com \
+              --conversation scammer_123 \
+              --type link \
+              --bait "Photo album"
+
+# 3. View hits at the dashboard
+open http://localhost:5000/
+```
+
+### Token Types
+
+| Type | Endpoint | Use Case |
+|------|----------|----------|
+| `link` | `/t/{id}?r=URL` | Tracking link with redirect |
+| `pixel` | `/p/{id}.png` | 1x1 transparent image for emails |
+| `gift_card` | `/gift-card-checker?t={id}` | Fake balance checker page |
+| `beacon` | `/b/{id}` | Callback URL for exe/doc beacons |
+
+### Programmatic Usage
+
+```python
+from src.beacons.token_generator import TokenGenerator
+
+gen = TokenGenerator(base_url="https://yourdomain.com")
+
+# Create tracking link
+link, token_id = gen.create_tracking_link(
+    conversation_id="scammer_123",
+    bait="Photo album",
+    redirect_url="https://drive.google.com/file/d/error"
+)
+
+# Create gift card checker
+checker, token_id = gen.create_gift_card_checker(
+    conversation_id="scammer_123"
+)
+
+# Get suggested persona message
+message = gen.get_suggested_message("gift_card", checker)
+print(message)
+# "I got the cards but I scratched one too hard! Can you check if it works? ..."
+```
+
+### What Gets Logged
+
+When a scammer clicks/opens a beacon:
+- **IP address** → geolocation lookup via ip-api.com
+- **User agent** → browser/OS fingerprint
+- **Timestamp** → timezone analysis
+- **Referer** → where they came from
+- **System info** → hostname, username, OS (if exe beacon posts it)
+
+### Deployment
+
+For production, run behind a reverse proxy (nginx/caddy) with HTTPS:
+
+```nginx
+server {
+    server_name track.yourdomain.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+### API Endpoints
+
+```bash
+# Get aggregated intel for a conversation
+curl http://localhost:5000/api/hits/scammer_123
+
+# Response:
+{
+  "conversation_id": "scammer_123",
+  "known_ips": ["102.89.x.x", "41.58.x.x"],
+  "known_locations": ["Lagos, Nigeria", "Accra, Ghana"],
+  "total_hits": 5,
+  "first_seen": "2024-01-15T10:23:00",
+  "last_seen": "2024-01-18T14:55:00"
+}
+```

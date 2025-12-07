@@ -11,10 +11,14 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "aiosqlite>=0.19.0",
     "rich>=13.0.0",
+    "flask>=3.0.0",
+    "requests>=2.31.0",
 ]
 
 [project.scripts]
 claudeinlove = "src.core.main_loop:main"
+beacon-server = "src.beacons.callback_server:run_server"
+create-beacon = "src.beacons.token_generator:main"
 
 [build-system]
 requires = ["hatchling"]
