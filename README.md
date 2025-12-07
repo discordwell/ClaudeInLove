@@ -5,10 +5,11 @@ Scam-baiter automation tool that wastes romance scammers' time with AI-powered r
 ## Features
 
 - **Signal Desktop integration** - Monitor and respond to scammer messages via CDP
+- **Facebook Messenger integration** - Automate messenger.com with persistent sessions
 - **ChatGPT web automation** - Free LLM responses using your ChatGPT Plus subscription
 - **Facebook persona scraping** - Build convincing alter ego from your own profile
 - **Suspicion detection** - Check responses before sending to avoid AI detection
-- **Human review queue** - Flag and pause suspicious conversations
+- **Human review queue** - Flag and pause suspicious conversations (persistent across restarts)
 - **Context compression** - Handle long conversations efficiently
 
 ## Setup
@@ -20,7 +21,7 @@ pip install -e .
 playwright install chromium
 ```
 
-### 2. Start Signal Desktop with CDP
+### 2. Start Signal Desktop with CDP (for Signal)
 
 ```bash
 signal-desktop --remote-debugging-port=9222
@@ -31,6 +32,14 @@ Or use the provided script:
 chmod +x scripts/start_signal.sh
 ./scripts/start_signal.sh
 ```
+
+### 2b. Test Messenger (for Facebook Messenger)
+
+```bash
+python scripts/test_messenger.py
+```
+
+First run will open a browser for manual Facebook login. Session is saved for future runs.
 
 ### 3. Set up persona (optional but recommended)
 
@@ -84,12 +93,12 @@ python scripts/review_flagged.py
 ## Architecture
 
 ```
-Signal Desktop ─┐
-                ├─► Main Loop ─► ChatGPT Web
-Messenger (TBD)─┘       │
-                        ├─► SQLite Storage
-                        ├─► Suspicion Checker
-                        └─► Persona Context
+Signal Desktop ──┐
+                 ├─► Main Loop ─► ChatGPT Web
+Facebook Messenger┘       │
+                          ├─► SQLite Storage
+                          ├─► Suspicion Checker
+                          └─► Persona Context
 ```
 
 ## License
