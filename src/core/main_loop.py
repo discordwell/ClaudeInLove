@@ -156,7 +156,7 @@ class ClaudeInLove:
             )
 
             # Check if paused for human review
-            if self.review_queue.is_paused(scammer.id):
+            if await self.review_queue.is_paused(scammer.id):
                 log_status(f"Skipping {scammer.id} (paused for review)")
                 return
 

@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS scammers (
     suspicion_flags INTEGER DEFAULT 0,
     status TEXT DEFAULT 'active',
     notes TEXT,
+    is_paused BOOLEAN DEFAULT FALSE,
     UNIQUE(platform, platform_id)
 );
 
@@ -99,6 +100,21 @@ class Database:
         self._conn.row_factory = aiosqlite.Row
         await self._conn.executescript(SCHEMA)
         await self._conn.commit()
+        # Run migrations for existing databases
+        await self._run_migrations()
+
+    async def _run_migrations(self):
+        """Run migrations for existing databases."""
+        # Migration: Add is_paused column if it doesn't exist
+        async with self._conn.execute("PRAGMA table_info(scammers)") as cursor:
+            columns = await cursor.fetchall()
+            column_names = [col[1] for col in columns]
+
+        if "is_paused" not in column_names:
+            await self._conn.execute(
+                "ALTER TABLE scammers ADD COLUMN is_paused BOOLEAN DEFAULT FALSE"
+            )
+            await self._conn.commit()
 
     async def close(self):
         """Close database connection."""
@@ -140,6 +156,7 @@ class Database:
                 suspicion_flags=row["suspicion_flags"],
                 status=ScammerStatus(row["status"]),
                 notes=row["notes"],
+                is_paused=bool(row["is_paused"]) if row["is_paused"] is not None else False,
             )
 
         # Create new scammer
@@ -165,13 +182,38 @@ class Database:
         await self._conn.execute(
             """UPDATE scammers SET
                display_name = ?, last_contact = ?, message_count = ?,
-               suspicion_flags = ?, status = ?, notes = ?
+               suspicion_flags = ?, status = ?, notes = ?, is_paused = ?
                WHERE id = ?""",
             (scammer.display_name, scammer.last_contact.isoformat(),
              scammer.message_count, scammer.suspicion_flags,
-             scammer.status.value, scammer.notes, scammer.id)
+             scammer.status.value, scammer.notes, scammer.is_paused, scammer.id)
         )
         await self._conn.commit()
+
+    async def set_scammer_paused(self, scammer_id: str, is_paused: bool):
+        """Set the pause state for a scammer."""
+        await self._conn.execute(
+            "UPDATE scammers SET is_paused = ? WHERE id = ?",
+            (is_paused, scammer_id)
+        )
+        await self._conn.commit()
+
+    async def get_paused_scammer_ids(self) -> List[str]:
+        """Get IDs of all paused scammers."""
+        async with self._conn.execute(
+            "SELECT id FROM scammers WHERE is_paused = TRUE"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [row["id"] for row in rows]
+
+    async def is_scammer_paused(self, scammer_id: str) -> bool:
+        """Check if a specific scammer is paused."""
+        async with self._conn.execute(
+            "SELECT is_paused FROM scammers WHERE id = ?",
+            (scammer_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return bool(row["is_paused"]) if row and row["is_paused"] is not None else False
 
     async def get_active_scammers(self) -> List[Scammer]:
         """Get all active scammers."""
@@ -192,6 +234,7 @@ class Database:
                 suspicion_flags=row["suspicion_flags"],
                 status=ScammerStatus(row["status"]),
                 notes=row["notes"],
+                is_paused=bool(row["is_paused"]) if row["is_paused"] is not None else False,
             )
             for row in rows
         ]

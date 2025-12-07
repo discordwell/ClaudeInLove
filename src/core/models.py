@@ -40,6 +40,7 @@ class Scammer:
     suspicion_flags: int = 0
     status: ScammerStatus = ScammerStatus.ACTIVE
     notes: Optional[str] = None
+    is_paused: bool = False  # Paused for human review
 
     def to_dict(self) -> dict:
         return {
@@ -53,6 +54,7 @@ class Scammer:
             "suspicion_flags": self.suspicion_flags,
             "status": self.status.value,
             "notes": self.notes,
+            "is_paused": self.is_paused,
         }
 
     @classmethod
@@ -68,6 +70,7 @@ class Scammer:
             suspicion_flags=data.get("suspicion_flags", 0),
             status=ScammerStatus(data.get("status", "active")),
             notes=data.get("notes"),
+            is_paused=data.get("is_paused", False),
         )
 
 
