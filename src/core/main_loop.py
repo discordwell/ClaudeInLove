@@ -5,8 +5,6 @@ Main orchestration loop for ClaudeInLove.
 import asyncio
 import random
 import signal
-import sys
-from datetime import datetime
 from typing import Optional
 
 from rich.console import Console
@@ -14,7 +12,7 @@ from rich.panel import Panel
 
 from .config import get_config
 from .database import Database
-from .models import Platform, MessageDirection, IncomingMessage
+from .models import MessageDirection, IncomingMessage
 
 from ..platforms.signal_client import SignalClient
 from ..llm.chatgpt_client import ChatGPTClient
@@ -156,7 +154,7 @@ class ClaudeInLove:
             )
 
             # Check if paused for human review
-            if self.review_queue.is_paused(scammer.id):
+            if await self.review_queue.is_paused(scammer.id):
                 log_status(f"Skipping {scammer.id} (paused for review)")
                 return
 
@@ -249,15 +247,29 @@ class ClaudeInLove:
             log_error(f"Error handling message: {e}", e)
 
 
-def setup_signal_handlers(app: ClaudeInLove):
-    """Set up signal handlers for graceful shutdown."""
-    def handler(signum, frame):
-        console.print("\n[yellow]Received shutdown signal...[/yellow]")
-        asyncio.create_task(app.stop())
-        sys.exit(0)
+def request_shutdown(app: ClaudeInLove):
+    """Signal the main loop to stop and shut down gracefully."""
+    console.print("\n[yellow]Received shutdown signal...[/yellow]")
+    app._running = False
+    app._shutdown_event.set()
 
-    signal.signal(signal.SIGINT, handler)
-    signal.signal(signal.SIGTERM, handler)
+
+def setup_signal_handlers(app: ClaudeInLove):
+    """
+    Register graceful-shutdown handlers on the running event loop.
+
+    Using the loop's ``add_signal_handler`` (instead of ``signal.signal``
+    plus ``sys.exit``) lets the main loop break out cleanly and run
+    :meth:`ClaudeInLove.stop`, so the database and browser are closed
+    properly. Falls back silently on platforms without loop signal support
+    (e.g. Windows), where the ``KeyboardInterrupt`` path still applies.
+    """
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, request_shutdown, app)
+        except (NotImplementedError, RuntimeError):
+            pass
 
 
 async def async_main():

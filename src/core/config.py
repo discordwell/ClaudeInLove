@@ -37,10 +37,16 @@ class Config:
     @classmethod
     def load(cls, env_file: str = ".env") -> "Config":
         """Load configuration from environment variables."""
-        load_dotenv(env_file)
-
         # Get project root
         project_root = Path(__file__).parent.parent.parent
+
+        # Resolve the env file relative to the project root when a bare
+        # filename is given, so configuration loads regardless of the
+        # current working directory.
+        env_path = Path(env_file)
+        if not env_path.is_absolute():
+            env_path = project_root / env_path
+        load_dotenv(env_path)
 
         return cls(
             # Paths

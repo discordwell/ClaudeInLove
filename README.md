@@ -81,6 +81,25 @@ MAX_RESPONSE_DELAY=180
 python scripts/review_flagged.py
 ```
 
+Pausing or resuming here is written to the database, so the running main loop
+(and any later restart) honors your decision.
+
+## Development
+
+Install the dev extras and run the test suite:
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
+The tests cover the deterministic logic (models, prompts, suspicion scoring,
+context compression, database, persona building, phone normalization, message
+deduplication, and pause state). The Playwright-driven clients are exercised
+manually since they need a live browser.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for a full module map and design notes.
+
 ## Architecture
 
 ```

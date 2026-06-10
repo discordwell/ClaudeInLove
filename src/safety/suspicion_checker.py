@@ -3,12 +3,16 @@ Suspicion checker - detects if scammer might suspect they're talking to an AI.
 """
 
 import re
-from typing import Tuple, Optional
+from typing import Tuple, Optional, TYPE_CHECKING
 
-from ..llm.chatgpt_client import ChatGPTClient
 from ..llm.prompt_builder import build_suspicion_check_prompt
 from ..core.config import get_config
 from ..utils.logging import logger, log_suspicion
+
+if TYPE_CHECKING:
+    # Imported only for type hints; avoids pulling the Playwright browser
+    # stack into modules (and tests) that only need the suspicion logic.
+    from ..llm.chatgpt_client import ChatGPTClient
 
 
 class SuspicionChecker:
@@ -46,7 +50,7 @@ class SuspicionChecker:
         r"captcha|turing",
     ]
 
-    def __init__(self, llm_client: Optional[ChatGPTClient] = None):
+    def __init__(self, llm_client: "Optional[ChatGPTClient]" = None):
         """
         Args:
             llm_client: Optional ChatGPT client for advanced checking

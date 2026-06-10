@@ -7,6 +7,7 @@ Then we connect via CDP to automate it.
 """
 
 import asyncio
+import hashlib
 import re
 from typing import List, Optional, Set
 from datetime import datetime
@@ -195,8 +196,10 @@ class SignalClient(PlatformClient):
                     # Get message ID (timestamp or data attribute)
                     msg_id = await elem.get_attribute('data-id')
                     if not msg_id:
-                        # Use content hash as ID
-                        msg_id = str(hash(content + str(datetime.now().timestamp())))
+                        # No stable DOM id: derive a deterministic fingerprint
+                        # from the sender + content so the same message is not
+                        # re-processed (and re-answered) on every poll.
+                        msg_id = self._message_fingerprint(sender_id, content)
 
                     # Skip if we've seen this message
                     if msg_id in self._seen_message_ids:
@@ -327,6 +330,20 @@ class SignalClient(PlatformClient):
         except Exception as e:
             logger.error(f"Error finding conversation: {e}")
             return False
+
+    @staticmethod
+    def _message_fingerprint(sender_id: Optional[str], content: str) -> str:
+        """
+        Build a stable identifier for a message that has no DOM ``data-id``.
+
+        The fingerprint must be deterministic across polls (it must not depend
+        on the current time) so the dedup set in :attr:`_seen_message_ids`
+        actually prevents the same incoming message from being answered twice.
+        """
+        digest = hashlib.sha1(
+            f"{sender_id or 'unknown'}|{content}".encode("utf-8")
+        ).hexdigest()
+        return f"fp:{digest}"
 
     def _normalize_phone(self, phone: str) -> str:
         """Normalize phone number to E.164 format."""

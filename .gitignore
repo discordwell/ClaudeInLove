@@ -21,6 +21,14 @@ Thumbs.db
 *.log
 logs/
 
+# Runtime state (SQLite DB, browser profiles, screenshots, scraped persona)
+data/
+
+# Test / tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
 # Build
 dist/
 build/

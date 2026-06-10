@@ -18,12 +18,18 @@ class HumanReviewQueue:
 
     When suspicion checker flags a response, it can be queued here
     for manual review before sending.
+
+    Pause state is persisted to the database (the scammer's ``status``
+    column) rather than kept only in memory, so that:
+
+    * a pause survives a restart of the main loop, and
+    * the standalone ``review_flagged.py`` tool (a separate process) can
+      resume a conversation and have the running loop honour it.
     """
 
     def __init__(self, db: Database):
         self.db = db
         self.config = get_config()
-        self._paused_scammers: set = set()
 
     async def flag_for_review(
         self,
@@ -48,8 +54,7 @@ class HumanReviewQueue:
         )
 
         if self.config.auto_pause_on_flag:
-            self._paused_scammers.add(scammer_id)
-            logger.warning(f"Paused auto-response for {scammer_id}")
+            await self.pause(scammer_id)
 
         # Log to console for immediate visibility
         console.print("\n[bold red]═══ HUMAN REVIEW NEEDED ═══[/bold red]")
@@ -60,19 +65,19 @@ class HumanReviewQueue:
         console.print(f"Reason: {reason}")
         console.print("[bold red]═══════════════════════════[/bold red]\n")
 
-    def is_paused(self, scammer_id: str) -> bool:
-        """Check if a scammer's conversation is paused."""
-        return scammer_id in self._paused_scammers
+    async def is_paused(self, scammer_id: str) -> bool:
+        """Check if a scammer's conversation is paused (reads from DB)."""
+        return await self.db.get_scammer_status(scammer_id) == ScammerStatus.PAUSED
 
-    def resume(self, scammer_id: str):
+    async def resume(self, scammer_id: str):
         """Resume auto-responses for a scammer."""
-        self._paused_scammers.discard(scammer_id)
+        await self.db.set_scammer_status(scammer_id, ScammerStatus.ACTIVE)
         logger.info(f"Resumed auto-response for {scammer_id}")
 
-    def pause(self, scammer_id: str):
+    async def pause(self, scammer_id: str):
         """Pause auto-responses for a scammer."""
-        self._paused_scammers.add(scammer_id)
-        logger.info(f"Paused auto-response for {scammer_id}")
+        await self.db.set_scammer_status(scammer_id, ScammerStatus.PAUSED)
+        logger.warning(f"Paused auto-response for {scammer_id}")
 
     async def get_pending_reviews(self) -> List[dict]:
         """Get all pending human reviews."""
@@ -90,7 +95,7 @@ class HumanReviewQueue:
                 "score": flag.suspicion_score,
                 "reason": flag.reason,
                 "message": last_message.content if last_message else "N/A",
-                "is_paused": self.is_paused(flag.scammer_id),
+                "is_paused": await self.is_paused(flag.scammer_id),
             })
 
         return reviews
@@ -122,10 +127,10 @@ async def interactive_review_session(db: Database):
         action = input("[R]esume / [P]ause / [S]kip / [Q]uit: ").lower()
 
         if action == 'r':
-            queue.resume(review['scammer_id'])
+            await queue.resume(review['scammer_id'])
             console.print("[green]Resumed[/green]")
         elif action == 'p':
-            queue.pause(review['scammer_id'])
+            await queue.pause(review['scammer_id'])
             console.print("[yellow]Paused[/yellow]")
         elif action == 'q':
             break

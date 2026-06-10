@@ -173,6 +173,32 @@ class Database:
         )
         await self._conn.commit()
 
+    async def set_scammer_status(self, scammer_id: str, status: ScammerStatus):
+        """Update only the status field for a scammer."""
+        await self._conn.execute(
+            "UPDATE scammers SET status = ? WHERE id = ?",
+            (status.value, scammer_id)
+        )
+        await self._conn.commit()
+
+    async def get_scammer_status(self, scammer_id: str) -> Optional[ScammerStatus]:
+        """Get the current status for a scammer, or None if unknown."""
+        async with self._conn.execute(
+            "SELECT status FROM scammers WHERE id = ?",
+            (scammer_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return ScammerStatus(row["status"]) if row else None
+
+    async def get_paused_scammer_ids(self) -> List[str]:
+        """Get IDs of all scammers currently paused for human review."""
+        async with self._conn.execute(
+            "SELECT id FROM scammers WHERE status = ?",
+            (ScammerStatus.PAUSED.value,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [row["id"] for row in rows]
+
     async def get_active_scammers(self) -> List[Scammer]:
         """Get all active scammers."""
         async with self._conn.execute(
@@ -249,7 +275,7 @@ class Database:
         async with self._conn.execute(
             """SELECT * FROM messages
                WHERE scammer_id = ?
-               ORDER BY timestamp DESC
+               ORDER BY timestamp DESC, id DESC
                LIMIT ? OFFSET ?""",
             (scammer_id, limit, offset)
         ) as cursor:
