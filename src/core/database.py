@@ -115,6 +115,12 @@ class Database:
         await self._add_column_if_missing(
             "suspicion_log", "proposed_response", "TEXT"
         )
+        # ``reviewed_at`` records when a human acted on a flag. It has always
+        # been in the CREATE TABLE, but ``get_unreviewed_flags`` now reads it, so
+        # guarantee it on any older DB too (keeps the migration self-consistent).
+        await self._add_column_if_missing(
+            "suspicion_log", "reviewed_at", "TIMESTAMP"
+        )
 
     async def _add_column_if_missing(self, table: str, column: str, decl: str):
         """
@@ -494,6 +500,21 @@ class Database:
                 reason=row["reason"],
                 proposed_response=row["proposed_response"],
                 human_reviewed=bool(row["human_reviewed"]),
+                reviewed_at=datetime.fromisoformat(row["reviewed_at"]) if row["reviewed_at"] else None,
             )
             for row in rows
         ]
+
+    async def mark_flag_reviewed(self, flag_id: int) -> None:
+        """
+        Mark a suspicion flag as handled by a human reviewer.
+
+        Without this, ``get_unreviewed_flags`` (which filters on
+        ``human_reviewed = FALSE``) would re-surface every flag forever, so the
+        review queue could never be drained. Records ``reviewed_at`` for audit.
+        """
+        await self._conn.execute(
+            "UPDATE suspicion_log SET human_reviewed = TRUE, reviewed_at = ? WHERE id = ?",
+            (datetime.now().isoformat(), flag_id),
+        )
+        await self._conn.commit()

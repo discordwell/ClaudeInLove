@@ -84,7 +84,9 @@ python scripts/review_flagged.py
 Each pending review shows the scammer's message, the suspicion score/reason,
 and the exact reply that was withheld, so you can decide whether to resume.
 Pausing or resuming here is written to the database, so the running main loop
-(and any later restart) honors your decision.
+(and any later restart) honors your decision. Resuming or pausing also marks
+that flag as reviewed, so it drains from the queue and won't reappear next run;
+choosing **Skip** leaves it pending for a later session.
 
 ## Development
 

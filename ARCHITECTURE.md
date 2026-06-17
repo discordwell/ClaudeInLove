@@ -55,7 +55,8 @@ Signal Desktop ──(CDP poll)──► Main Loop ──► Context Manager ─
 - **context_snapshots** — compressed summaries of older messages.
 - **persona** — the alter-ego document (most recent row wins).
 - **suspicion_log** — every flagged reply, with score/reason, the withheld
-  `proposed_response`, and a `human_reviewed` flag.
+  `proposed_response`, and a `human_reviewed`/`reviewed_at` pair that the review
+  tool sets once a human acts on the flag (so the queue actually drains).
 
 ## Key design points
 
@@ -66,7 +67,10 @@ Signal Desktop ──(CDP poll)──► Main Loop ──► Context Manager ─
   DB, so the running loop, a restart, and the standalone `review_flagged.py`
   tool all agree. When a reply is withheld, the exact text the bot wanted to
   send is stored on the suspicion log (`proposed_response`) so the reviewer can
-  judge it, not just its score.
+  judge it, not just its score. Acting on a flag (resume or pause) calls
+  `mark_flag_reviewed`, which sets `human_reviewed`/`reviewed_at`; without it the
+  unreviewed-flags query would re-surface every flag forever and the queue could
+  never be drained. Skipping leaves the flag pending.
 - **AI probes always escalate to a human.** If an inbound message is testing
   for a bot ("are you a robot?"), the loop flags the exchange for review even
   when the drafted reply scores below the suspicion threshold — that is exactly

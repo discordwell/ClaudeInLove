@@ -135,12 +135,43 @@ async def test_log_suspicion_persists_proposed_response(db):
     assert flags[0].proposed_response == "I would be happy to help you with that."
 
 
+async def test_mark_flag_reviewed_drains_it_from_the_queue(db):
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
+    msg = await db.add_message(scammer.id, MessageDirection.INBOUND, "are you real?")
+    flag = await db.log_suspicion(scammer.id, msg.id, 0.9, "AI probe", proposed_response="yes!")
+
+    # Initially the flag is pending review.
+    pending = await db.get_unreviewed_flags()
+    assert [f.id for f in pending] == [flag.id]
+    assert pending[0].human_reviewed is False
+    assert pending[0].reviewed_at is None
+
+    await db.mark_flag_reviewed(flag.id)
+
+    # It no longer shows up as needing review.
+    assert await db.get_unreviewed_flags() == []
+
+
+async def test_mark_flag_reviewed_only_affects_the_named_flag(db):
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
+    msg = await db.add_message(scammer.id, MessageDirection.INBOUND, "hi")
+    flag_a = await db.log_suspicion(scammer.id, msg.id, 0.9, "first")
+    flag_b = await db.log_suspicion(scammer.id, msg.id, 0.8, "second")
+
+    await db.mark_flag_reviewed(flag_a.id)
+
+    remaining = await db.get_unreviewed_flags()
+    assert [f.id for f in remaining] == [flag_b.id]
+
+
 async def test_connect_migrates_legacy_suspicion_log(tmp_path):
-    """A DB created before the proposed_response column upgrades cleanly."""
+    """A DB predating both back-filled suspicion_log columns upgrades cleanly."""
     path = tmp_path / "legacy.db"
 
-    # Build a suspicion_log table without the newer column, as an older
-    # version of the app would have created it.
+    # Build the oldest suspicion_log shape: missing BOTH proposed_response and
+    # reviewed_at. (reviewed_at has always been in the CREATE TABLE, but
+    # get_unreviewed_flags now reads it, so the migration must guarantee it on
+    # any older DB — this exercises that step.)
     legacy = await aiosqlite.connect(path)
     await legacy.execute(
         """CREATE TABLE suspicion_log (
@@ -149,8 +180,7 @@ async def test_connect_migrates_legacy_suspicion_log(tmp_path):
             message_id INTEGER,
             suspicion_score REAL,
             reason TEXT,
-            human_reviewed BOOLEAN DEFAULT FALSE,
-            reviewed_at TIMESTAMP
+            human_reviewed BOOLEAN DEFAULT FALSE
         )"""
     )
     await legacy.commit()
@@ -159,16 +189,23 @@ async def test_connect_migrates_legacy_suspicion_log(tmp_path):
     db = Database(db_path=path)
     await db.connect()  # runs the migration; must not raise
     try:
-        # Re-running the migration is a no-op now that the column exists.
+        # Re-running the migration is a no-op now that the columns exist.
         await db._migrate()
 
         scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
         msg = await db.add_message(scammer.id, MessageDirection.OUTBOUND, "hi")
-        await db.log_suspicion(
+        flag = await db.log_suspicion(
             scammer.id, msg.id, 0.9, "robotic", proposed_response="hello there",
         )
 
+        # Both back-filled columns are usable: reading reviewed_at (added by the
+        # migration) does not raise, and proposed_response round-trips.
         flags = await db.get_unreviewed_flags()
         assert flags[0].proposed_response == "hello there"
+        assert flags[0].reviewed_at is None
+
+        # The freshly-added reviewed_at column is writable, so the flag drains.
+        await db.mark_flag_reviewed(flag.id)
+        assert await db.get_unreviewed_flags() == []
     finally:
         await db.close()

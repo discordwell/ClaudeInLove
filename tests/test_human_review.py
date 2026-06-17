@@ -1,7 +1,7 @@
 """Tests for the human-review queue and its DB-backed pause state."""
 
 from src.core.models import MessageDirection, Platform, ScammerStatus
-from src.safety.human_review import HumanReviewQueue
+from src.safety.human_review import HumanReviewQueue, interactive_review_session
 
 
 async def test_pause_and_resume_persist_to_db(db):
@@ -89,3 +89,56 @@ async def test_get_pending_reviews_reflects_pause_state(db):
     assert reviews[0]["scammer_id"] == scammer.id
     assert reviews[0]["is_paused"] is True
     assert reviews[0]["proposed_response"] == "of course i'm real!"
+
+
+async def test_mark_reviewed_removes_flag_from_pending(db):
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
+    msg = await db.add_message(scammer.id, MessageDirection.INBOUND, "are you a bot?")
+    flag = await db.log_suspicion(scammer.id, msg.id, 0.9, "AI probe", proposed_response="no!")
+
+    queue = HumanReviewQueue(db)
+    assert len(await queue.get_pending_reviews()) == 1
+
+    await queue.mark_reviewed(flag.id)
+    assert await queue.get_pending_reviews() == []
+
+
+async def test_interactive_resume_marks_flag_reviewed(db, monkeypatch):
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
+    msg = await db.add_message(scammer.id, MessageDirection.INBOUND, "are you a bot?")
+    await db.log_suspicion(scammer.id, msg.id, 0.9, "AI probe", proposed_response="no way!")
+    await HumanReviewQueue(db).pause(scammer.id)
+
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "r")
+    await interactive_review_session(db)
+
+    # The conversation is resumed AND the flag is drained from the queue, so a
+    # second run of the review tool would show nothing.
+    assert await db.get_scammer_status(scammer.id) == ScammerStatus.ACTIVE
+    assert await db.get_unreviewed_flags() == []
+
+
+async def test_interactive_pause_marks_flag_reviewed(db, monkeypatch):
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
+    msg = await db.add_message(scammer.id, MessageDirection.INBOUND, "send me money")
+    await db.log_suspicion(scammer.id, msg.id, 0.95, "robotic", proposed_response="ok sure")
+
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "p")
+    await interactive_review_session(db)
+
+    # Keeping it paused is still a decision: the flag drains, but the scammer
+    # stays paused.
+    assert await db.get_scammer_status(scammer.id) == ScammerStatus.PAUSED
+    assert await db.get_unreviewed_flags() == []
+
+
+async def test_interactive_skip_leaves_flag_pending(db, monkeypatch):
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
+    msg = await db.add_message(scammer.id, MessageDirection.INBOUND, "hello?")
+    await db.log_suspicion(scammer.id, msg.id, 0.9, "robotic", proposed_response="hi")
+
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "s")
+    await interactive_review_session(db)
+
+    # Skip is "decide later": the flag remains for the next session.
+    assert len(await db.get_unreviewed_flags()) == 1

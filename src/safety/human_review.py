@@ -71,6 +71,16 @@ class HumanReviewQueue:
         """Check if a scammer's conversation is paused (reads from DB)."""
         return await self.db.get_scammer_status(scammer_id) == ScammerStatus.PAUSED
 
+    async def mark_reviewed(self, flag_id: int):
+        """
+        Record that a human has acted on a flagged reply so it leaves the queue.
+
+        ``get_pending_reviews`` reads from ``get_unreviewed_flags``; until a flag
+        is marked reviewed it keeps reappearing every time the review tool runs.
+        """
+        await self.db.mark_flag_reviewed(flag_id)
+        logger.info(f"Marked suspicion flag {flag_id} as reviewed")
+
     async def resume(self, scammer_id: str):
         """Resume auto-responses for a scammer."""
         await self.db.set_scammer_status(scammer_id, ScammerStatus.ACTIVE)
@@ -132,14 +142,19 @@ async def interactive_review_session(db: Database):
         # Get user action
         action = input("[R]esume / [P]ause / [S]kip / [Q]uit: ").lower()
 
+        # Resume and Pause are both decisions, so the flag is handled and is
+        # marked reviewed (it won't resurface next run). Skip leaves it pending;
+        # Quit stops without touching the remaining flags.
         if action == 'r':
             await queue.resume(review['scammer_id'])
+            await queue.mark_reviewed(review['flag_id'])
             console.print("[green]Resumed[/green]")
         elif action == 'p':
             await queue.pause(review['scammer_id'])
+            await queue.mark_reviewed(review['flag_id'])
             console.print("[yellow]Paused[/yellow]")
         elif action == 'q':
             break
-        # Skip does nothing
+        # Skip leaves the flag in the queue for a later session.
 
         console.print()

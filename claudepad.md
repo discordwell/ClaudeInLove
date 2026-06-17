@@ -2,6 +2,33 @@
 
 ## Session Summaries (newest first)
 
+### 2026-06-17T12:54:16Z — Maintenance pass: review-flag lifecycle (queue could never drain)
+Fixed a real correctness bug in the human-review workflow (suite 65 → 71).
+
+- **The review queue never drained.** `suspicion_log` has `human_reviewed` /
+  `reviewed_at` columns and `get_unreviewed_flags()` filters
+  `WHERE human_reviewed = FALSE`, but *nothing anywhere ever set them to TRUE*.
+  Confirmed by grep across `src`/`scripts`. Consequence: `review_flagged.py`
+  re-showed every flag ever created, on every run, forever — the reviewer could
+  never clear handled items, and `reviewed_at` was permanently NULL.
+- **Fix.** Added `Database.mark_flag_reviewed(flag_id)` (sets
+  `human_reviewed = TRUE, reviewed_at = now`) and
+  `HumanReviewQueue.mark_reviewed(flag_id)` delegating to it. Wired into
+  `interactive_review_session`: **Resume** and **Pause** are both decisions, so
+  they mark the displayed flag reviewed (per-flag granularity, by `flag_id`);
+  **Skip** leaves it pending; **Quit** stops without touching the rest. Pause
+  still keeps the scammer paused (that's `scammers.status`, separate from the
+  flag's reviewed state). Also threaded `reviewed_at` back into the
+  `SuspicionFlag` returned by `get_unreviewed_flags` (it was being dropped).
+- **Tests (+6).** DB: `mark_flag_reviewed` drains only the named flag, leaves
+  others. Queue/interactive: `mark_reviewed` clears pending; monkeypatched
+  `input` proves Resume/Pause drain + Skip keeps pending. Verified the two
+  interactive tests FAIL when the wiring is neutered, then restored to green.
+
+Verified: `pytest` → 71 passed; `compileall` clean. Docs updated
+(README review section, ARCHITECTURE suspicion_log + human-review notes). Not
+pushed (handled separately).
+
 ### 2026-06-17T08:47:36Z — Maintenance pass: human-review usefulness + orchestration tests
 Built on the prior pass. Three cohesive improvements, all verified by tests
 (suite grew 56 → 65):
@@ -85,3 +112,7 @@ no regressions. Not pushed (handled separately).
 - **Review workflow**: flagged replies are withheld AND stored
   (`suspicion_log.proposed_response`) so `review_flagged.py` can show the exact
   text. AI probes ("are you a bot?") force review regardless of heuristic score.
+  Acting on a flag in the review tool (resume/pause) calls
+  `Database.mark_flag_reviewed` → sets `human_reviewed`/`reviewed_at` so the flag
+  leaves `get_unreviewed_flags()`; skip leaves it pending. Marking is per-flag
+  (`flag_id`), independent of the scammer's pause state (`scammers.status`).
