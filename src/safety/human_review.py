@@ -45,12 +45,14 @@ class HumanReviewQueue:
         If auto_pause is enabled, the scammer will be paused
         and no automatic responses will be sent.
         """
-        # Log the suspicion
+        # Log the suspicion, keeping the withheld reply so a human reviewer
+        # can see exactly what the bot wanted to send before deciding.
         await self.db.log_suspicion(
             scammer_id=scammer_id,
             message_id=message.id,
             score=suspicion_score,
-            reason=reason
+            reason=reason,
+            proposed_response=proposed_response,
         )
 
         if self.config.auto_pause_on_flag:
@@ -95,6 +97,7 @@ class HumanReviewQueue:
                 "score": flag.suspicion_score,
                 "reason": flag.reason,
                 "message": last_message.content if last_message else "N/A",
+                "proposed_response": flag.proposed_response,
                 "is_paused": await self.is_paused(flag.scammer_id),
             })
 
@@ -119,7 +122,10 @@ async def interactive_review_session(db: Database):
         console.print(f"Scammer: {review['scammer_id'][:12]}...")
         console.print(f"Score: {review['score']:.2f}")
         console.print(f"Reason: {review['reason']}")
-        console.print(f"Message: {review['message'][:200]}...")
+        console.print(f"Their message: {review['message'][:200]}...")
+        console.print(
+            f"Proposed reply (withheld): {review['proposed_response'] or 'N/A'}"
+        )
         console.print(f"Status: {'PAUSED' if review['is_paused'] else 'ACTIVE'}")
         console.print()
 

@@ -54,7 +54,8 @@ Signal Desktop ──(CDP poll)──► Main Loop ──► Context Manager ─
 - **messages** — full conversation history (inbound/outbound, flag metadata).
 - **context_snapshots** — compressed summaries of older messages.
 - **persona** — the alter-ego document (most recent row wins).
-- **suspicion_log** — every flagged reply, with score/reason and a `human_reviewed` flag.
+- **suspicion_log** — every flagged reply, with score/reason, the withheld
+  `proposed_response`, and a `human_reviewed` flag.
 
 ## Key design points
 
@@ -63,7 +64,13 @@ Signal Desktop ──(CDP poll)──► Main Loop ──► Context Manager ─
 - **Human review is authoritative and durable.** A flagged conversation is
   paused by writing `status = paused` to the database. `is_paused()` reads the
   DB, so the running loop, a restart, and the standalone `review_flagged.py`
-  tool all agree.
+  tool all agree. When a reply is withheld, the exact text the bot wanted to
+  send is stored on the suspicion log (`proposed_response`) so the reviewer can
+  judge it, not just its score.
+- **AI probes always escalate to a human.** If an inbound message is testing
+  for a bot ("are you a robot?"), the loop flags the exchange for review even
+  when the drafted reply scores below the suspicion threshold — that is exactly
+  the moment a person should decide what happens next.
 - **Deduplication must be time-independent.** When a Signal message has no
   stable DOM id, `SignalClient._message_fingerprint(sender, content)` derives a
   deterministic id so the same message is never answered twice.
@@ -81,10 +88,14 @@ and the optional path overrides `DATA_DIR` / `LOG_DIR` / `BROWSER_USER_DATA_DIR`
 ## Testing
 
 `pytest` covers the deterministic layers — models, prompt building, suspicion
-heuristics and LLM-result parsing, context compression, the database, persona
-building, phone normalization, message fingerprinting, and DB-backed pause
-state. The Playwright-driven clients (`signal_client`, `chatgpt_client`,
-`facebook_scraper`) require a live browser and are exercised manually. Run:
+heuristics and LLM-result parsing, context compression, the database (including
+schema migration of older DBs), persona building, phone normalization, message
+fingerprinting, and DB-backed pause state. The main-loop orchestration
+(`handle_incoming_message`) is covered end-to-end with the real database,
+context manager, suspicion checker and review queue, faking only the two
+browser-driven clients. The Playwright-driven clients (`signal_client`,
+`chatgpt_client`, `facebook_scraper`) require a live browser and are exercised
+manually. Run:
 
 ```bash
 pip install -e ".[dev]"

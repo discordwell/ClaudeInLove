@@ -166,10 +166,13 @@ class ClaudeInLove:
                 platform_message_id=msg.platform_message_id,
             )
 
-            # Quick check if they're testing for AI
-            if self.suspicion_checker.quick_check(msg.content):
+            # Quick check if they're probing for an AI ("are you a bot?").
+            # An active probe is exactly the moment a human should look, so it
+            # forces a review below even when the drafted reply scores low on
+            # its own.
+            is_ai_probe = self.suspicion_checker.quick_check(msg.content)
+            if is_ai_probe:
                 log_status(f"AI test detected from {scammer.id[:8]}")
-                # Still respond, but flag for review after
 
             # Get conversation context
             messages, summary = await self.context_manager.get_compressed_context(
@@ -200,8 +203,13 @@ class ClaudeInLove:
                 scammer_id=scammer.id,
             )
 
-            # If flagged, queue for review
-            if score >= self.config.suspicion_threshold:
+            # Flag for human review when the drafted reply looks AI-ish OR the
+            # scammer is actively probing for a bot.
+            should_review = score >= self.config.suspicion_threshold or is_ai_probe
+            if should_review:
+                if is_ai_probe and score < self.config.suspicion_threshold:
+                    reason = f"{reason}; AI probe in their message"
+
                 await self.review_queue.flag_for_review(
                     scammer_id=scammer.id,
                     message=stored_msg,
@@ -231,8 +239,8 @@ class ClaudeInLove:
                     scammer_id=scammer.id,
                     direction=MessageDirection.OUTBOUND,
                     content=response,
-                    was_flagged=score >= self.config.suspicion_threshold,
-                    flag_reason=reason if score >= self.config.suspicion_threshold else None,
+                    was_flagged=should_review,
+                    flag_reason=reason if should_review else None,
                 )
                 log_message("outbound", scammer.id, response)
             else:

@@ -2,6 +2,37 @@
 
 ## Session Summaries (newest first)
 
+### 2026-06-17T08:47:36Z — Maintenance pass: human-review usefulness + orchestration tests
+Built on the prior pass. Three cohesive improvements, all verified by tests
+(suite grew 56 → 65):
+
+- **Withheld replies are now persisted for the reviewer.** Previously a flagged
+  reply was printed to the console but never stored, so `review_flagged.py`
+  showed score/reason + the scammer's message but NOT the text the bot wanted
+  to send — the reviewer couldn't actually judge it. Added a
+  `proposed_response` column to `suspicion_log`, threaded through `SuspicionFlag`,
+  `Database.log_suspicion`/`get_unreviewed_flags`, `HumanReviewQueue`, and the
+  interactive review display.
+- **Idempotent SQLite migration.** `CREATE TABLE IF NOT EXISTS` never alters an
+  existing table, so older local DBs would lack the new column. Added
+  `Database._migrate()` / `_add_column_if_missing()` (PRAGMA-guarded
+  `ALTER TABLE`), run from `connect()`. Identifiers are trusted literals only.
+- **AI probes now escalate to a human.** In `main_loop.handle_incoming_message`,
+  `quick_check()`'s probe detection was dead (logged, then discarded; the
+  `# flag for review after` comment lied). Now an AI probe forces review even
+  when the drafted reply scores below the suspicion threshold, and the stored
+  outbound message's `was_flagged`/`flag_reason` use the same `should_review`
+  decision (fixes a latent inconsistency on the probe-flagged-but-sent path).
+- **Orchestration tests (new `tests/test_main_loop.py`).** `handle_incoming_message`
+  had zero coverage. Added 7 end-to-end tests (real DB/context/suspicion/review,
+  fake Signal+ChatGPT, delays forced to 0): happy path, paused-skip, empty
+  response, flag+autopause withhold, flag-no-autopause send, AI-probe-forces-
+  review, send-failure-no-outbound. Plus DB tests for the new column + migration.
+
+Verified: `pytest` → 65 passed; `compileall` clean; code-review sub-agent found
+no blockers (two nits addressed: migration-helper trust note + probe-test
+comment). Not pushed (handled separately).
+
 ### 2026-06-10T19:50:21Z — Maintenance pass: tests + bug fixes + docs
 Repo had **zero tests**. Added a full `pytest` suite (56 tests) for the
 deterministic layers and fixed several real bugs found during review:
@@ -46,3 +77,11 @@ no regressions. Not pushed (handled separately).
   `is_paused()` reads the DB so the loop, restarts, and the review tool agree.
 - **Config**: all runtime knobs are env vars (see `.env.example`); `get_config()`
   is a cached global singleton.
+- **Schema migrations**: `Database.connect()` runs `executescript(SCHEMA)` then
+  `_migrate()`. New columns on existing tables must be added via
+  `_add_column_if_missing()` (PRAGMA-guarded `ALTER TABLE`) since
+  `CREATE TABLE IF NOT EXISTS` won't alter a live table. Migration steps must be
+  idempotent and use trusted-literal identifiers only.
+- **Review workflow**: flagged replies are withheld AND stored
+  (`suspicion_log.proposed_response`) so `review_flagged.py` can show the exact
+  text. AI probes ("are you a bot?") force review regardless of heuristic score.

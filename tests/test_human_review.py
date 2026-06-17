@@ -50,6 +50,8 @@ async def test_flag_for_review_auto_pauses_and_logs(db, monkeypatch):
     flags = await db.get_unreviewed_flags()
     assert len(flags) == 1
     assert flags[0].reason == "robotic phrasing"
+    # the withheld reply is persisted so a reviewer can see it later
+    assert flags[0].proposed_response == "i would be happy to help you"
 
 
 async def test_flag_for_review_without_autopause_keeps_active(db, monkeypatch):
@@ -75,7 +77,9 @@ async def test_flag_for_review_without_autopause_keeps_active(db, monkeypatch):
 async def test_get_pending_reviews_reflects_pause_state(db):
     scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
     msg = await db.add_message(scammer.id, MessageDirection.INBOUND, "are you real?")
-    await db.log_suspicion(scammer.id, msg.id, 0.9, "AI probe")
+    await db.log_suspicion(
+        scammer.id, msg.id, 0.9, "AI probe", proposed_response="of course i'm real!",
+    )
 
     queue = HumanReviewQueue(db)
     await queue.pause(scammer.id)
@@ -84,3 +88,4 @@ async def test_get_pending_reviews_reflects_pause_state(db):
     assert len(reviews) == 1
     assert reviews[0]["scammer_id"] == scammer.id
     assert reviews[0]["is_paused"] is True
+    assert reviews[0]["proposed_response"] == "of course i'm real!"

@@ -155,6 +155,7 @@ class SuspicionFlag:
     message_id: int = 0
     suspicion_score: float = 0.0
     reason: str = ""
+    proposed_response: Optional[str] = None  # The withheld reply, for the reviewer
     human_reviewed: bool = False
     reviewed_at: Optional[datetime] = None
 

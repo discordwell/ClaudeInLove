@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS suspicion_log (
     message_id INTEGER,
     suspicion_score REAL,
     reason TEXT,
+    proposed_response TEXT,
     human_reviewed BOOLEAN DEFAULT FALSE,
     reviewed_at TIMESTAMP,
     FOREIGN KEY (scammer_id) REFERENCES scammers(id),
@@ -99,6 +100,38 @@ class Database:
         self._conn.row_factory = aiosqlite.Row
         await self._conn.executescript(SCHEMA)
         await self._conn.commit()
+        await self._migrate()
+
+    async def _migrate(self):
+        """
+        Apply lightweight, idempotent schema migrations to databases that were
+        created by an older version of the app.
+
+        ``CREATE TABLE IF NOT EXISTS`` never alters an existing table, so new
+        columns have to be added explicitly. Each step here is a no-op when the
+        column already exists, so ``connect()`` is safe to run repeatedly.
+        """
+        # ``proposed_response`` lets a reviewer see the withheld reply.
+        await self._add_column_if_missing(
+            "suspicion_log", "proposed_response", "TEXT"
+        )
+
+    async def _add_column_if_missing(self, table: str, column: str, decl: str):
+        """
+        Add ``column`` to ``table`` if it is not already present.
+
+        SQLite cannot bind identifiers, so ``table``/``column``/``decl`` are
+        interpolated into the statement directly. They must always be trusted
+        literals from :meth:`_migrate` — never pass external/scammer-derived
+        input here.
+        """
+        async with self._conn.execute(f"PRAGMA table_info({table})") as cursor:
+            existing = {row["name"] for row in await cursor.fetchall()}
+        if column not in existing:
+            await self._conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN {column} {decl}"
+            )
+            await self._conn.commit()
 
     async def close(self):
         """Close database connection."""
@@ -416,14 +449,15 @@ class Database:
         scammer_id: str,
         message_id: int,
         score: float,
-        reason: str
+        reason: str,
+        proposed_response: Optional[str] = None
     ) -> SuspicionFlag:
-        """Log a suspicion flag."""
+        """Log a suspicion flag, including the reply that was withheld."""
         cursor = await self._conn.execute(
             """INSERT INTO suspicion_log
-               (scammer_id, message_id, suspicion_score, reason)
-               VALUES (?, ?, ?, ?)""",
-            (scammer_id, message_id, score, reason)
+               (scammer_id, message_id, suspicion_score, reason, proposed_response)
+               VALUES (?, ?, ?, ?, ?)""",
+            (scammer_id, message_id, score, reason, proposed_response)
         )
 
         # Update scammer flag count
@@ -439,6 +473,7 @@ class Database:
             message_id=message_id,
             suspicion_score=score,
             reason=reason,
+            proposed_response=proposed_response,
         )
 
     async def get_unreviewed_flags(self) -> List[SuspicionFlag]:
@@ -457,6 +492,7 @@ class Database:
                 message_id=row["message_id"],
                 suspicion_score=row["suspicion_score"],
                 reason=row["reason"],
+                proposed_response=row["proposed_response"],
                 human_reviewed=bool(row["human_reviewed"]),
             )
             for row in rows

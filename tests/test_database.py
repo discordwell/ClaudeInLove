@@ -1,5 +1,7 @@
 """Tests for the SQLite persistence layer."""
 
+import aiosqlite
+
 from src.core.database import Database
 from src.core.models import (
     Persona, ScammerStatus, MessageDirection, Platform,
@@ -112,7 +114,61 @@ async def test_suspicion_log_and_unreviewed_flags(db):
     assert len(flags) == 1
     assert flags[0].suspicion_score == 0.9
     assert flags[0].reason == "too perfect"
+    # proposed_response is optional and defaults to NULL/None
+    assert flags[0].proposed_response is None
 
     # logging a suspicion bumps the scammer's flag counter
     refreshed = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
     assert refreshed.suspicion_flags == 1
+
+
+async def test_log_suspicion_persists_proposed_response(db):
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
+    msg = await db.add_message(scammer.id, MessageDirection.INBOUND, "are you real?")
+
+    await db.log_suspicion(
+        scammer.id, msg.id, 0.85, "robotic phrasing",
+        proposed_response="I would be happy to help you with that.",
+    )
+
+    flags = await db.get_unreviewed_flags()
+    assert flags[0].proposed_response == "I would be happy to help you with that."
+
+
+async def test_connect_migrates_legacy_suspicion_log(tmp_path):
+    """A DB created before the proposed_response column upgrades cleanly."""
+    path = tmp_path / "legacy.db"
+
+    # Build a suspicion_log table without the newer column, as an older
+    # version of the app would have created it.
+    legacy = await aiosqlite.connect(path)
+    await legacy.execute(
+        """CREATE TABLE suspicion_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scammer_id TEXT NOT NULL,
+            message_id INTEGER,
+            suspicion_score REAL,
+            reason TEXT,
+            human_reviewed BOOLEAN DEFAULT FALSE,
+            reviewed_at TIMESTAMP
+        )"""
+    )
+    await legacy.commit()
+    await legacy.close()
+
+    db = Database(db_path=path)
+    await db.connect()  # runs the migration; must not raise
+    try:
+        # Re-running the migration is a no-op now that the column exists.
+        await db._migrate()
+
+        scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
+        msg = await db.add_message(scammer.id, MessageDirection.OUTBOUND, "hi")
+        await db.log_suspicion(
+            scammer.id, msg.id, 0.9, "robotic", proposed_response="hello there",
+        )
+
+        flags = await db.get_unreviewed_flags()
+        assert flags[0].proposed_response == "hello there"
+    finally:
+        await db.close()

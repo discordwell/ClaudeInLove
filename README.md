@@ -81,6 +81,8 @@ MAX_RESPONSE_DELAY=180
 python scripts/review_flagged.py
 ```
 
+Each pending review shows the scammer's message, the suspicion score/reason,
+and the exact reply that was withheld, so you can decide whether to resume.
 Pausing or resuming here is written to the database, so the running main loop
 (and any later restart) honors your decision.
 
@@ -94,9 +96,11 @@ pytest
 ```
 
 The tests cover the deterministic logic (models, prompts, suspicion scoring,
-context compression, database, persona building, phone normalization, message
-deduplication, and pause state). The Playwright-driven clients are exercised
-manually since they need a live browser.
+context compression, database + schema migration, persona building, phone
+normalization, message deduplication, and pause state) as well as the
+main-loop orchestration end-to-end with the browser clients faked. The
+Playwright-driven clients themselves are exercised manually since they need a
+live browser.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for a full module map and design notes.
 
