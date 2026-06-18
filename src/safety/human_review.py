@@ -91,6 +91,19 @@ class HumanReviewQueue:
         await self.db.set_scammer_status(scammer_id, ScammerStatus.PAUSED)
         logger.warning(f"Paused auto-response for {scammer_id}")
 
+    async def archive(self, scammer_id: str):
+        """
+        Retire a conversation for good.
+
+        Unlike :meth:`pause` (a temporary hold for review), archiving marks a
+        conversation as finished — the scammer caught on, went silent, or the
+        operator is simply done with them. The main loop only auto-responds to
+        ``ACTIVE`` conversations, so an archived one is never answered again
+        unless it is explicitly resumed.
+        """
+        await self.db.set_scammer_status(scammer_id, ScammerStatus.ARCHIVED)
+        logger.info(f"Archived conversation with {scammer_id}")
+
     async def get_pending_reviews(self) -> List[dict]:
         """Get all pending human reviews."""
         flags = await self.db.get_unreviewed_flags()
@@ -108,6 +121,11 @@ class HumanReviewQueue:
                 else None
             )
 
+            # Report the conversation's actual lifecycle status (active / paused
+            # / archived) rather than only a paused/active boolean, so the
+            # reviewer can tell, say, an archived conversation from a live one.
+            status = await self.db.get_scammer_status(flag.scammer_id)
+
             reviews.append({
                 "flag_id": flag.id,
                 "scammer_id": flag.scammer_id,
@@ -115,7 +133,8 @@ class HumanReviewQueue:
                 "reason": flag.reason,
                 "message": flagged_message.content if flagged_message else "N/A",
                 "proposed_response": flag.proposed_response,
-                "is_paused": await self.is_paused(flag.scammer_id),
+                "status": status.value if status else "unknown",
+                "is_paused": status == ScammerStatus.PAUSED,
             })
 
         return reviews
@@ -143,15 +162,15 @@ async def interactive_review_session(db: Database):
         console.print(
             f"Proposed reply (withheld): {review['proposed_response'] or 'N/A'}"
         )
-        console.print(f"Status: {'PAUSED' if review['is_paused'] else 'ACTIVE'}")
+        console.print(f"Status: {review['status'].upper()}")
         console.print()
 
         # Get user action
-        action = input("[R]esume / [P]ause / [S]kip / [Q]uit: ").lower()
+        action = input("[R]esume / [P]ause / [A]rchive / [S]kip / [Q]uit: ").lower()
 
-        # Resume and Pause are both decisions, so the flag is handled and is
-        # marked reviewed (it won't resurface next run). Skip leaves it pending;
-        # Quit stops without touching the remaining flags.
+        # Resume, Pause and Archive are all decisions, so the flag is handled and
+        # is marked reviewed (it won't resurface next run). Skip leaves it
+        # pending; Quit stops without touching the remaining flags.
         if action == 'r':
             await queue.resume(review['scammer_id'])
             await queue.mark_reviewed(review['flag_id'])
@@ -160,6 +179,10 @@ async def interactive_review_session(db: Database):
             await queue.pause(review['scammer_id'])
             await queue.mark_reviewed(review['flag_id'])
             console.print("[yellow]Paused[/yellow]")
+        elif action == 'a':
+            await queue.archive(review['scammer_id'])
+            await queue.mark_reviewed(review['flag_id'])
+            console.print("[dim]Archived[/dim]")
         elif action == 'q':
             break
         # Skip leaves the flag in the queue for a later session.

@@ -247,7 +247,8 @@ class Database:
     async def get_active_scammers(self) -> List[Scammer]:
         """Get all active scammers."""
         async with self._conn.execute(
-            "SELECT * FROM scammers WHERE status = 'active' ORDER BY last_contact DESC"
+            "SELECT * FROM scammers WHERE status = ? ORDER BY last_contact DESC",
+            (ScammerStatus.ACTIVE.value,)
         ) as cursor:
             rows = await cursor.fetchall()
 

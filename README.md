@@ -82,11 +82,20 @@ python scripts/review_flagged.py
 ```
 
 Each pending review shows the scammer's message, the suspicion score/reason,
-and the exact reply that was withheld, so you can decide whether to resume.
-Pausing or resuming here is written to the database, so the running main loop
-(and any later restart) honors your decision. Resuming or pausing also marks
-that flag as reviewed, so it drains from the queue and won't reappear next run;
-choosing **Skip** leaves it pending for a later session.
+the conversation's current status, and the exact reply that was withheld, so you
+can decide what to do. The choices are:
+
+- **Resume** — clear the pause; the bot keeps engaging this conversation.
+- **Pause** — keep it on hold (no auto-replies) until you resume it.
+- **Archive** — retire the conversation for good (e.g. the scammer caught on or
+  went silent); the bot never auto-replies again unless you later resume it.
+- **Skip** — decide later; the flag stays in the queue.
+
+Resume, Pause and Archive are all decisions, so they write the new status to the
+database and mark that flag reviewed, so it drains from the queue and won't
+reappear next run. The running main loop (and any later restart) honors the
+status, because it only auto-replies to **active** conversations. Choosing
+**Skip** leaves the flag pending for a later session.
 
 ## Engagement Stats
 

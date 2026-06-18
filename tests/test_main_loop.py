@@ -124,6 +124,24 @@ async def test_paused_scammer_is_skipped_entirely(db, monkeypatch):
     assert await db.get_scammer_status(scammer.id) == ScammerStatus.PAUSED
 
 
+async def test_archived_scammer_is_skipped_entirely(db, monkeypatch):
+    # Archiving retires a conversation. The loop gates on "is it ACTIVE?", so an
+    # archived scammer must be skipped just like a paused one — otherwise the bot
+    # would keep auto-answering a conversation the operator has finished with.
+    signal = FakeSignal()
+    app = make_app(db, monkeypatch, signal=signal)
+
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, SENDER, "Romeo")
+    await app.review_queue.archive(scammer.id)
+
+    await app.handle_incoming_message(incoming("hey, you ignoring me?"))
+
+    # Nothing stored, nothing sent; the status is untouched.
+    assert await db.get_message_count(scammer.id) == 0
+    assert signal.sent == []
+    assert await db.get_scammer_status(scammer.id) == ScammerStatus.ARCHIVED
+
+
 async def test_empty_response_is_not_sent(db, monkeypatch):
     chatgpt = FakeChatGPT("")  # ChatGPT produced nothing
     signal = FakeSignal()

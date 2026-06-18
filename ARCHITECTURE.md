@@ -63,10 +63,20 @@ Signal Desktop ──(CDP poll)──► Main Loop ──► Context Manager ─
 
 - **Reactive only.** Messages are processed because the scammer messaged the
   operator; nothing is sent unprompted.
+- **The loop only auto-replies to `active` conversations.** `scammers.status`
+  is the conversation's lifecycle state: `active` (engage normally), `paused`
+  (a temporary hold for human review), `archived` (retired — the scammer caught
+  on, went silent, or the operator is done), and `flagged` (reserved). The main
+  loop gates on `status == active`, **not** merely "not paused", so *every*
+  non-active state suppresses the automatic reply. Gating only on `is_paused`
+  would silently keep answering an archived (or otherwise non-active)
+  conversation. Resuming sets the status back to `active`.
 - **Human review is authoritative and durable.** A flagged conversation is
   paused by writing `status = paused` to the database. `is_paused()` reads the
   DB, so the running loop, a restart, and the standalone `review_flagged.py`
-  tool all agree. When a reply is withheld, the exact text the bot wanted to
+  tool all agree. The review tool can **Resume** (→ active), **Pause** (stay
+  paused), or **Archive** (→ archived) a flagged conversation — each is a
+  decision, so each also marks the flag reviewed (see below). When a reply is withheld, the exact text the bot wanted to
   send is stored on the suspicion log (`proposed_response`) so the reviewer can
   judge it, not just its score. The queue pairs each flag with the exact
   message it was raised against (`SuspicionFlag.message_id` →
@@ -109,12 +119,14 @@ and the optional path overrides `DATA_DIR` / `LOG_DIR` / `BROWSER_USER_DATA_DIR`
 heuristics and LLM-result parsing, context compression, the database (including
 schema migration of older DBs, durable dedup, and the stats aggregates),
 persona building, phone normalization, message fingerprinting, the stats
-overview, DB-backed pause state, and that the review queue surfaces each flag's
-own message (not just the most recent one). The main-loop orchestration
-(`handle_incoming_message`) is covered end-to-end with the real database,
-context manager, suspicion checker and review queue, faking only the two
-browser-driven clients — including that a repeated real platform id is answered
-only once while a repeated content fingerprint is not suppressed across calls. The Playwright-driven clients (`signal_client`,
+overview, DB-backed pause state, the conversation lifecycle (pause / resume /
+archive, and that the review queue reports each conversation's real status and
+surfaces each flag's own message, not just the most recent one). The main-loop
+orchestration (`handle_incoming_message`) is covered end-to-end with the real
+database, context manager, suspicion checker and review queue, faking only the
+two browser-driven clients — including that paused **and archived** conversations
+are skipped entirely, and that a repeated real platform id is answered only once
+while a repeated content fingerprint is not suppressed across calls. The Playwright-driven clients (`signal_client`,
 `chatgpt_client`, `facebook_scraper`) require a live browser and are exercised
 manually. Run:
 

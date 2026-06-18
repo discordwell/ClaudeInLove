@@ -2,6 +2,43 @@
 
 ## Session Summaries (newest first)
 
+### 2026-06-18T11:08:15Z — Maintenance pass: conversation lifecycle (archive) + fix latent auto-respond gate
+One cohesive improvement (suite 87 → 91). Completed a dead enum value and fixed
+a latent correctness bug in the same stroke.
+
+- **Latent bug: the loop auto-replied to any non-paused status.**
+  `handle_incoming_message` gated on `review_queue.is_paused()` (status ==
+  PAUSED), so a conversation in *any* other non-active state would still get an
+  automatic reply. Changed the gate to `scammer.status == ScammerStatus.ACTIVE`
+  (using the status already on the row `get_or_create_scammer` just returned —
+  no extra DB read). Now paused **and** archived (and the reserved `flagged`)
+  all correctly suppress the bot. Proved it's a real guard: temporarily reverted
+  the gate to `is_paused` and the new archived-skip test FAILED (bot generated +
+  "sent" a reply to an archived scammer), restored → green.
+- **Completed the unreachable `ARCHIVED` status.** `ScammerStatus.FLAGGED` /
+  `ARCHIVED` were defined but never set anywhere (only ACTIVE/PAUSED reachable).
+  Added `HumanReviewQueue.archive()` (status → ARCHIVED; distinct from pause =
+  temporary hold) and an `[A]rchive` action to `interactive_review_session`
+  (archive + `mark_reviewed`, a terminal decision that drains the flag like
+  Resume/Pause). Archive retires a burned/finished conversation; the active-only
+  gate means it's never auto-answered again unless resumed.
+- **`get_pending_reviews` now reports the real `status`** (active/paused/
+  archived) instead of only an `is_paused` boolean, so the reviewer can tell an
+  archived conversation from a live one. Kept `is_paused` (derived from the same
+  single status read) for back-compat. Review tool shows `status.upper()`.
+- **Consistency:** `get_active_scammers` now parametrizes `ScammerStatus.ACTIVE
+  .value` instead of a hardcoded `'active'` literal (every other status query
+  already does; behavior-identical).
+- **Tests (+4):** `test_archived_scammer_is_skipped_entirely` (main loop),
+  `test_archive_persists_to_db`, `test_get_pending_reviews_reports_archived_status`,
+  `test_interactive_archive_marks_flag_reviewed_and_archives`; plus a `status`
+  assertion on the existing pause-state review test.
+
+Verified: `pytest` → 91 passed; `compileall` clean; review sub-agent found no
+blockers/should-fix (only nits — took the redundant-DB-read one). Docs updated
+(README review section + lifecycle, ARCHITECTURE gate/lifecycle + test
+inventory). Not pushed (orchestrator handles that).
+
 ### 2026-06-18T03:34:01Z — Maintenance pass: land stats + durable-dedup WIP, fix review-queue wrong-message bug
 Two parts. First **landed the operator's staged WIP** (it was complete and
 green): engagement stats (`src/core/stats.py` + `scripts/stats.py`, read-only
@@ -136,8 +173,15 @@ no regressions. Not pushed (handled separately).
   manual/wet-test territory. `tests/conftest.py` redirects `DATA_DIR`/`LOG_DIR`
   to a temp dir before importing `src` (config + file log handler are built at
   import time).
-- **Pause semantics**: pause = `scammers.status = 'paused'`; resume = `'active'`.
-  `is_paused()` reads the DB so the loop, restarts, and the review tool agree.
+- **Lifecycle semantics**: `scammers.status` ∈ active/paused/archived/flagged
+  (flagged reserved/unused). pause = `'paused'` (temporary hold), resume =
+  `'active'`, archive = `'archived'` (retired/finished). The main loop
+  auto-replies **only when status == ACTIVE** — gating on "is it active?" (not
+  just "is it paused?") so every non-active state suppresses the bot; it reads
+  the status straight off the row `get_or_create_scammer` returns. `is_paused()`
+  reads the DB so the loop, restarts, and the review tool agree. The review tool
+  offers Resume/Pause/Archive (all terminal decisions → `mark_flag_reviewed`) +
+  Skip (leave pending).
 - **Config**: all runtime knobs are env vars (see `.env.example`); `get_config()`
   is a cached global singleton.
 - **Schema migrations**: `Database.connect()` runs `executescript(SCHEMA)` then

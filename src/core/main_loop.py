@@ -12,7 +12,7 @@ from rich.panel import Panel
 
 from .config import get_config
 from .database import Database
-from .models import MessageDirection, IncomingMessage
+from .models import MessageDirection, IncomingMessage, ScammerStatus
 
 from ..platforms.signal_client import SignalClient
 from ..llm.chatgpt_client import ChatGPTClient
@@ -153,9 +153,15 @@ class ClaudeInLove:
                 display_name=msg.sender_name,
             )
 
-            # Check if paused for human review
-            if await self.review_queue.is_paused(scammer.id):
-                log_status(f"Skipping {scammer.id} (paused for review)")
+            # Only auto-respond to ACTIVE conversations. A human can pause a
+            # conversation (a temporary hold for review) or archive it (retire a
+            # burned/finished one); both must suppress the automatic reply.
+            # Gating on "is it active?" rather than only "is it paused?" means
+            # every non-active status correctly stops the bot, instead of
+            # silently answering an archived (or otherwise non-active) scammer.
+            # The status came back on the row we just fetched, so no extra read.
+            if scammer.status != ScammerStatus.ACTIVE:
+                log_status(f"Skipping {scammer.id[:8]} (status: {scammer.status.value})")
                 return
 
             # Durable dedup: the platform client's in-memory seen-set is lost on

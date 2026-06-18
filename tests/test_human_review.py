@@ -88,7 +88,34 @@ async def test_get_pending_reviews_reflects_pause_state(db):
     assert len(reviews) == 1
     assert reviews[0]["scammer_id"] == scammer.id
     assert reviews[0]["is_paused"] is True
+    assert reviews[0]["status"] == "paused"
     assert reviews[0]["proposed_response"] == "of course i'm real!"
+
+
+async def test_archive_persists_to_db(db):
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
+    queue = HumanReviewQueue(db)
+
+    await queue.archive(scammer.id)
+
+    assert await db.get_scammer_status(scammer.id) == ScammerStatus.ARCHIVED
+    # Archiving is a hold like pausing, but a distinct lifecycle state.
+    assert await queue.is_paused(scammer.id) is False
+
+
+async def test_get_pending_reviews_reports_archived_status(db):
+    # A conversation can still carry an unreviewed flag after being archived;
+    # the review row must report its real status, not just paused/active.
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
+    msg = await db.add_message(scammer.id, MessageDirection.INBOUND, "send me a steam card")
+    await db.log_suspicion(scammer.id, msg.id, 0.95, "money request", proposed_response="hmm")
+
+    queue = HumanReviewQueue(db)
+    await queue.archive(scammer.id)
+
+    reviews = await queue.get_pending_reviews()
+    assert reviews[0]["status"] == "archived"
+    assert reviews[0]["is_paused"] is False
 
 
 async def test_get_pending_reviews_shows_the_flagged_message_not_the_latest(db):
@@ -174,3 +201,17 @@ async def test_interactive_skip_leaves_flag_pending(db, monkeypatch):
 
     # Skip is "decide later": the flag remains for the next session.
     assert len(await db.get_unreviewed_flags()) == 1
+
+
+async def test_interactive_archive_marks_flag_reviewed_and_archives(db, monkeypatch):
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
+    msg = await db.add_message(scammer.id, MessageDirection.INBOUND, "are you a bot?")
+    await db.log_suspicion(scammer.id, msg.id, 0.9, "AI probe", proposed_response="nope")
+
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "a")
+    await interactive_review_session(db)
+
+    # Archiving is a terminal decision: the conversation is retired AND the flag
+    # drains from the queue, so a second run shows nothing.
+    assert await db.get_scammer_status(scammer.id) == ScammerStatus.ARCHIVED
+    assert await db.get_unreviewed_flags() == []
