@@ -76,6 +76,73 @@ async def test_status_persists_across_reconnect(tmp_path):
         await db2.close()
 
 
+async def test_has_inbound_message_tracks_stored_platform_ids(db):
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
+
+    # Nothing stored yet.
+    assert await db.has_inbound_message(scammer.id, "sig-123") is False
+
+    await db.add_message(
+        scammer.id, MessageDirection.INBOUND, "hi", platform_message_id="sig-123"
+    )
+
+    # The exact (scammer, platform id) pair is now recognised...
+    assert await db.has_inbound_message(scammer.id, "sig-123") is True
+    # ...but a different id, or the same id under a different scammer, is not.
+    assert await db.has_inbound_message(scammer.id, "sig-999") is False
+    other = await db.get_or_create_scammer(Platform.SIGNAL, "+2", None)
+    assert await db.has_inbound_message(other.id, "sig-123") is False
+
+
+async def test_has_inbound_message_ignores_outbound_replies(db):
+    # Our own replies are stored with a NULL platform id; dedup must only ever
+    # match a prior *inbound* delivery, never an outbound message.
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
+    await db.add_message(
+        scammer.id, MessageDirection.OUTBOUND, "hello", platform_message_id="sig-7"
+    )
+    assert await db.has_inbound_message(scammer.id, "sig-7") is False
+
+
+async def test_get_all_scammers_includes_every_status(db):
+    a = await db.get_or_create_scammer(Platform.SIGNAL, "+1", "Active Al")
+    b = await db.get_or_create_scammer(Platform.SIGNAL, "+2", "Paused Pat")
+    c = await db.get_or_create_scammer(Platform.MESSENGER, "+3", "Archived Ann")
+    await db.set_scammer_status(b.id, ScammerStatus.PAUSED)
+    await db.set_scammer_status(c.id, ScammerStatus.ARCHIVED)
+
+    # get_active_scammers only returns the one active row...
+    assert {s.id for s in await db.get_active_scammers()} == {a.id}
+    # ...while get_all_scammers returns every row regardless of status.
+    assert {s.id for s in await db.get_all_scammers()} == {a.id, b.id, c.id}
+
+
+async def test_count_messages_by_direction(db):
+    # Always present, even on an empty database.
+    assert await db.count_messages_by_direction() == {"inbound": 0, "outbound": 0}
+
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
+    await db.add_message(scammer.id, MessageDirection.INBOUND, "hi")
+    await db.add_message(scammer.id, MessageDirection.INBOUND, "you there?")
+    await db.add_message(scammer.id, MessageDirection.OUTBOUND, "hey!")
+
+    assert await db.count_messages_by_direction() == {"inbound": 2, "outbound": 1}
+
+
+async def test_count_unreviewed_flags(db):
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
+    msg = await db.add_message(scammer.id, MessageDirection.INBOUND, "are you real?")
+    assert await db.count_unreviewed_flags() == 0
+
+    flag_a = await db.log_suspicion(scammer.id, msg.id, 0.9, "a")
+    await db.log_suspicion(scammer.id, msg.id, 0.8, "b")
+    assert await db.count_unreviewed_flags() == 2
+
+    # Reviewing one drains it from the count.
+    await db.mark_flag_reviewed(flag_a.id)
+    assert await db.count_unreviewed_flags() == 1
+
+
 async def test_context_snapshot_round_trip(db):
     scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
 

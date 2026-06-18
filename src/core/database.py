@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS suspicion_log (
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_messages_scammer ON messages(scammer_id);
 CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
+CREATE INDEX IF NOT EXISTS idx_messages_platform_id ON messages(platform_message_id);
 CREATE INDEX IF NOT EXISTS idx_scammers_status ON scammers(status);
 """
 
@@ -154,6 +155,22 @@ class Database:
 
     # ==================== Scammer Operations ====================
 
+    @staticmethod
+    def _row_to_scammer(row: aiosqlite.Row) -> Scammer:
+        """Map a ``scammers`` row to a :class:`Scammer` (single source of truth)."""
+        return Scammer(
+            id=row["id"],
+            platform=Platform(row["platform"]),
+            platform_id=row["platform_id"],
+            display_name=row["display_name"],
+            first_contact=datetime.fromisoformat(row["first_contact"]),
+            last_contact=datetime.fromisoformat(row["last_contact"]) if row["last_contact"] else datetime.now(),
+            message_count=row["message_count"],
+            suspicion_flags=row["suspicion_flags"],
+            status=ScammerStatus(row["status"]),
+            notes=row["notes"],
+        )
+
     async def get_or_create_scammer(
         self,
         platform: Platform,
@@ -168,18 +185,7 @@ class Database:
             row = await cursor.fetchone()
 
         if row:
-            return Scammer(
-                id=row["id"],
-                platform=Platform(row["platform"]),
-                platform_id=row["platform_id"],
-                display_name=row["display_name"],
-                first_contact=datetime.fromisoformat(row["first_contact"]),
-                last_contact=datetime.fromisoformat(row["last_contact"]) if row["last_contact"] else datetime.now(),
-                message_count=row["message_count"],
-                suspicion_flags=row["suspicion_flags"],
-                status=ScammerStatus(row["status"]),
-                notes=row["notes"],
-            )
+            return self._row_to_scammer(row)
 
         # Create new scammer
         scammer = Scammer(
@@ -245,21 +251,16 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
 
-        return [
-            Scammer(
-                id=row["id"],
-                platform=Platform(row["platform"]),
-                platform_id=row["platform_id"],
-                display_name=row["display_name"],
-                first_contact=datetime.fromisoformat(row["first_contact"]),
-                last_contact=datetime.fromisoformat(row["last_contact"]) if row["last_contact"] else datetime.now(),
-                message_count=row["message_count"],
-                suspicion_flags=row["suspicion_flags"],
-                status=ScammerStatus(row["status"]),
-                notes=row["notes"],
-            )
-            for row in rows
-        ]
+        return [self._row_to_scammer(row) for row in rows]
+
+    async def get_all_scammers(self) -> List[Scammer]:
+        """Get every scammer regardless of status, most recently active first."""
+        async with self._conn.execute(
+            "SELECT * FROM scammers ORDER BY last_contact DESC"
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        return [self._row_to_scammer(row) for row in rows]
 
     # ==================== Message Operations ====================
 
@@ -348,6 +349,44 @@ class Database:
         ) as cursor:
             row = await cursor.fetchone()
         return row[0] if row else 0
+
+    async def has_inbound_message(
+        self, scammer_id: str, platform_message_id: str
+    ) -> bool:
+        """
+        Return ``True`` if an inbound message with this platform id is already
+        stored for the scammer.
+
+        This makes the ``messages`` table the durable source of truth for
+        deduplication. The platform client keeps an in-memory seen-set, but that
+        is empty after a restart, so without this check a still-unread Signal
+        message could be re-extracted and answered a second time — double-texting
+        the scammer, which is exactly the kind of "bot" tell the safety layer
+        exists to avoid. Scoped to ``INBOUND`` so it never matches the NULL
+        ``platform_message_id`` of our own outbound replies.
+        """
+        async with self._conn.execute(
+            """SELECT 1 FROM messages
+               WHERE scammer_id = ? AND direction = ? AND platform_message_id = ?
+               LIMIT 1""",
+            (scammer_id, MessageDirection.INBOUND.value, platform_message_id),
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+    async def count_messages_by_direction(self) -> dict:
+        """Return total message counts keyed by direction across all scammers.
+
+        Always includes both ``inbound`` and ``outbound`` keys (zero when none
+        have been recorded), so callers can index them without guarding.
+        """
+        counts = {MessageDirection.INBOUND.value: 0, MessageDirection.OUTBOUND.value: 0}
+        async with self._conn.execute(
+            "SELECT direction, COUNT(*) AS n FROM messages GROUP BY direction"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        for row in rows:
+            counts[row["direction"]] = row["n"]
+        return counts
 
     # ==================== Context Snapshot Operations ====================
 
@@ -504,6 +543,18 @@ class Database:
             )
             for row in rows
         ]
+
+    async def count_unreviewed_flags(self) -> int:
+        """Count suspicion flags still awaiting human review.
+
+        Cheaper than ``len(get_unreviewed_flags())`` for a headline number —
+        it does not load every withheld ``proposed_response`` into memory.
+        """
+        async with self._conn.execute(
+            "SELECT COUNT(*) FROM suspicion_log WHERE human_reviewed = FALSE"
+        ) as cursor:
+            row = await cursor.fetchone()
+        return row[0] if row else 0
 
     async def mark_flag_reviewed(self, flag_id: int) -> None:
         """

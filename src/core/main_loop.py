@@ -158,6 +158,22 @@ class ClaudeInLove:
                 log_status(f"Skipping {scammer.id} (paused for review)")
                 return
 
+            # Durable dedup: the platform client's in-memory seen-set is lost on
+            # restart, so fall back to the messages table — the persistent record
+            # of what we have already handled — to avoid answering the same
+            # message twice. Only applied to real, unique platform ids; content
+            # fingerprints (synthetic_id) collide for repeated text and so are
+            # left to the per-session seen-set.
+            if (
+                msg.platform_message_id
+                and not msg.synthetic_id
+                and await self.db.has_inbound_message(
+                    scammer.id, msg.platform_message_id
+                )
+            ):
+                log_status(f"Skipping duplicate message from {scammer.id[:8]}")
+                return
+
             # Store incoming message
             stored_msg = await self.db.add_message(
                 scammer_id=scammer.id,

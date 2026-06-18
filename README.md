@@ -88,6 +88,20 @@ Pausing or resuming here is written to the database, so the running main loop
 that flag as reviewed, so it drains from the queue and won't reappear next run;
 choosing **Skip** leaves it pending for a later session.
 
+## Engagement Stats
+
+```bash
+python scripts/stats.py
+```
+
+Prints a read-only overview of every conversation: how many scammers are
+engaged (broken down by active/paused/flagged/archived), total messages
+exchanged (inbound vs. outbound), the cumulative "time wasted" across all
+conversations, and how many replies are still pending review — plus a
+per-scammer table of message counts, suspicion flags, and engagement duration.
+It never opens a browser or sends anything, so it is safe to run while the main
+loop is live.
+
 ## Development
 
 Install the dev extras and run the test suite:
@@ -99,7 +113,8 @@ pytest
 
 The tests cover the deterministic logic (models, prompts, suspicion scoring,
 context compression, database + schema migration, persona building, phone
-normalization, message deduplication, and pause state) as well as the
+normalization, message deduplication — including the durable cross-restart
+check — the engagement-stats aggregation, and pause state) as well as the
 main-loop orchestration end-to-end with the browser clients faked. The
 Playwright-driven clients themselves are exercised manually since they need a
 live browser.

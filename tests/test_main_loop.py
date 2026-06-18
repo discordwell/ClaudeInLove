@@ -66,12 +66,20 @@ def make_app(db, monkeypatch, chatgpt=None, signal=None):
     return app
 
 
-def incoming(content: str, sender: str = SENDER, name: str = "Romeo"):
+def incoming(
+    content: str,
+    sender: str = SENDER,
+    name: str = "Romeo",
+    platform_message_id: str = None,
+    synthetic_id: bool = False,
+):
     return IncomingMessage(
         platform=Platform.SIGNAL,
         sender_id=sender,
         sender_name=name,
         content=content,
+        platform_message_id=platform_message_id,
+        synthetic_id=synthetic_id,
     )
 
 
@@ -206,6 +214,59 @@ async def test_ai_probe_forces_review_even_when_reply_scores_low(db, monkeypatch
     assert flags[0].suspicion_score < app.config.suspicion_threshold
     assert flags[0].proposed_response == "i'm right here babe lol"
     assert "AI probe" in flags[0].reason
+
+
+async def test_duplicate_stable_id_is_answered_only_once(db, monkeypatch):
+    # The same Signal message (same real platform id) is delivered twice — e.g.
+    # the in-memory seen-set was lost to a restart and the unread conversation
+    # got re-extracted. The second delivery must be skipped entirely.
+    chatgpt = FakeChatGPT("hey you! how's your day")
+    signal = FakeSignal(ok=True)
+    app = make_app(db, monkeypatch, chatgpt=chatgpt, signal=signal)
+
+    msg = incoming("morning love", platform_message_id="sig-abc")
+    await app.handle_incoming_message(msg)
+    await app.handle_incoming_message(msg)  # same id again
+
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, SENDER)
+    msgs = await db.get_messages(scammer.id)
+    # Exactly one inbound + one outbound; the duplicate did not double-text.
+    assert [m.direction for m in msgs] == [
+        MessageDirection.INBOUND,
+        MessageDirection.OUTBOUND,
+    ]
+    assert signal.sent == [(SENDER, "hey you! how's your day")]
+
+
+async def test_synthetic_id_duplicate_is_not_suppressed_across_calls(db, monkeypatch):
+    # A content fingerprint (synthetic_id=True) collides for identical text, so
+    # durable dedup must NOT permanently suppress it — a scammer who repeats the
+    # same line should still get a reply. (Within a live session the platform
+    # client's own seen-set handles genuine repeats; the DB layer stays out of
+    # it here.)
+    chatgpt = FakeChatGPT("aww you're sweet")
+    signal = FakeSignal(ok=True)
+    app = make_app(db, monkeypatch, chatgpt=chatgpt, signal=signal)
+
+    fp = "fp:deadbeef"
+    await app.handle_incoming_message(
+        incoming("good morning beautiful", platform_message_id=fp, synthetic_id=True)
+    )
+    await app.handle_incoming_message(
+        incoming("good morning beautiful", platform_message_id=fp, synthetic_id=True)
+    )
+
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, SENDER)
+    # Both deliveries were processed (not gated by the durable check).
+    assert signal.sent == [
+        (SENDER, "aww you're sweet"),
+        (SENDER, "aww you're sweet"),
+    ]
+    inbound = [
+        m for m in await db.get_messages(scammer.id)
+        if m.direction == MessageDirection.INBOUND
+    ]
+    assert len(inbound) == 2
 
 
 async def test_send_failure_does_not_store_outbound(db, monkeypatch):

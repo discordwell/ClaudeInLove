@@ -195,10 +195,13 @@ class SignalClient(PlatformClient):
 
                     # Get message ID (timestamp or data attribute)
                     msg_id = await elem.get_attribute('data-id')
-                    if not msg_id:
+                    is_synthetic = not msg_id
+                    if is_synthetic:
                         # No stable DOM id: derive a deterministic fingerprint
                         # from the sender + content so the same message is not
-                        # re-processed (and re-answered) on every poll.
+                        # re-processed (and re-answered) on every poll. Flag it
+                        # synthetic so the durable (cross-restart) dedup skips it
+                        # — identical text would otherwise be suppressed forever.
                         msg_id = self._message_fingerprint(sender_id, content)
 
                     # Skip if we've seen this message
@@ -213,6 +216,7 @@ class SignalClient(PlatformClient):
                         sender_name=sender_name,
                         content=content,
                         platform_message_id=msg_id,
+                        synthetic_id=is_synthetic,
                     )
                     messages.append(message)
                     log_message("inbound", sender_id or "unknown", content)

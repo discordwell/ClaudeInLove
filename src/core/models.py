@@ -169,3 +169,10 @@ class IncomingMessage:
     content: str
     timestamp: datetime = field(default_factory=datetime.now)
     platform_message_id: Optional[str] = None
+    # Whether ``platform_message_id`` is a real, unique id from the platform
+    # (safe for durable, restart-surviving dedup) rather than a content-derived
+    # fingerprint. Fingerprints collide for identical text — a scammer's daily
+    # "good morning" would hash the same — so they must NOT be treated as
+    # permanently-seen across sessions. See ``SignalClient`` for where the
+    # fingerprint fallback sets this to ``True``.
+    synthetic_id: bool = False

@@ -35,7 +35,8 @@ Signal Desktop ──(CDP poll)──► Main Loop ──► Context Manager ─
 | `core` | `main_loop.py` | Orchestration: poll → build context → generate → screen → delay → send. Owns startup/shutdown. |
 | `core` | `config.py` | Env-driven `Config` (paths, thresholds, delays). Loaded once as a global singleton; `.env` is resolved relative to the project root. |
 | `core` | `models.py` | Dataclasses + enums (`Scammer`, `Message`, `Persona`, `ContextSnapshot`, `SuspicionFlag`, `IncomingMessage`) with dict (de)serialization. |
-| `core` | `database.py` | Async SQLite (`aiosqlite`). Schema + CRUD for all entities; pause state lives in `scammers.status`. |
+| `core` | `database.py` | Async SQLite (`aiosqlite`). Schema + CRUD for all entities; pause state lives in `scammers.status`. Durable dedup via `has_inbound_message`. |
+| `core` | `stats.py` | Read-only aggregation of engagements, message volume, flags, and time-wasted into an `Overview` for the operator. No browser; nothing is sent. |
 | `llm` | `chatgpt_client.py` | Playwright automation of the ChatGPT web UI (uses the operator's logged-in session). |
 | `llm` | `context_manager.py` | Three-tier context compression: recent window verbatim, LLM summary of older messages, snapshots persisted to the DB. Token-budget trimming. |
 | `llm` | `prompt_builder.py` | Pure functions that assemble the system prompt (persona), conversation context, and the suspicion-check prompt. |
@@ -75,9 +76,17 @@ Signal Desktop ──(CDP poll)──► Main Loop ──► Context Manager ─
   for a bot ("are you a robot?"), the loop flags the exchange for review even
   when the drafted reply scores below the suspicion threshold — that is exactly
   the moment a person should decide what happens next.
-- **Deduplication must be time-independent.** When a Signal message has no
-  stable DOM id, `SignalClient._message_fingerprint(sender, content)` derives a
-  deterministic id so the same message is never answered twice.
+- **Deduplication must be time-independent _and_ durable.** When a Signal
+  message has no stable DOM id, `SignalClient._message_fingerprint(sender,
+  content)` derives a deterministic id so the same message is never answered
+  twice within a session. The client's in-memory seen-set is lost on restart,
+  though, so the main loop also consults the `messages` table
+  (`Database.has_inbound_message`) before acting: a real platform id we have
+  already stored is skipped, so a restart can't make the bot re-answer (and
+  double-text) a scammer. This durable check is scoped to real platform ids —
+  content fingerprints (`IncomingMessage.synthetic_id`) collide for identical
+  text, so they would otherwise suppress a repeated "good morning" forever and
+  are left to the per-session seen-set.
 - **The safety layer is browser-free.** `suspicion_checker` takes its LLM client
   by injection and imports `ChatGPTClient` only under `TYPE_CHECKING`, so the
   screening logic can run (and be tested) without Playwright.
@@ -93,11 +102,13 @@ and the optional path overrides `DATA_DIR` / `LOG_DIR` / `BROWSER_USER_DATA_DIR`
 
 `pytest` covers the deterministic layers — models, prompt building, suspicion
 heuristics and LLM-result parsing, context compression, the database (including
-schema migration of older DBs), persona building, phone normalization, message
-fingerprinting, and DB-backed pause state. The main-loop orchestration
+schema migration of older DBs, durable dedup, and the stats aggregates),
+persona building, phone normalization, message fingerprinting, the stats
+overview, and DB-backed pause state. The main-loop orchestration
 (`handle_incoming_message`) is covered end-to-end with the real database,
 context manager, suspicion checker and review queue, faking only the two
-browser-driven clients. The Playwright-driven clients (`signal_client`,
+browser-driven clients — including that a repeated real platform id is answered
+only once while a repeated content fingerprint is not suppressed across calls. The Playwright-driven clients (`signal_client`,
 `chatgpt_client`, `facebook_scraper`) require a live browser and are exercised
 manually. Run:
 
