@@ -34,6 +34,24 @@ async def test_add_message_updates_count_and_orders_chronologically(db):
     assert refreshed.message_count == 3
 
 
+async def test_get_message_by_id_round_trips(db):
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
+    stored = await db.add_message(
+        scammer.id, MessageDirection.INBOUND, "are you real?",
+        platform_message_id="sig-1",
+    )
+
+    fetched = await db.get_message_by_id(stored.id)
+    assert fetched is not None
+    assert fetched.id == stored.id
+    assert fetched.content == "are you real?"
+    assert fetched.direction == MessageDirection.INBOUND
+    assert fetched.platform_message_id == "sig-1"
+
+    # A non-existent id yields None rather than raising.
+    assert await db.get_message_by_id(999_999) is None
+
+
 async def test_recent_messages_respects_count(db):
     scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
     for i in range(10):

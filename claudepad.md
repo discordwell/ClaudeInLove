@@ -2,6 +2,42 @@
 
 ## Session Summaries (newest first)
 
+### 2026-06-18T03:34:01Z — Maintenance pass: land stats + durable-dedup WIP, fix review-queue wrong-message bug
+Two parts. First **landed the operator's staged WIP** (it was complete and
+green): engagement stats (`src/core/stats.py` + `scripts/stats.py`, read-only
+aggregation — engagements by status, in/out volume, time wasted, pending
+reviews) and **durable cross-restart dedup** (`Database.has_inbound_message`
+consulted from the main loop so a restart-emptied seen-set can't re-answer a
+still-unread Signal message; scoped to real platform ids — content fingerprints
+carry `IncomingMessage.synthetic_id=True` and stay on the per-session set so a
+repeated "good morning" still gets a reply). Plus `get_all_scammers`,
+`count_messages_by_direction`, `count_unreviewed_flags`, an
+`idx_messages_platform_id` index, and a `_row_to_scammer` helper. Committed as
+one unit (suite 71 → 84).
+
+Then **fixed a real correctness bug in the human-review display** (suite 84 → 87):
+- **`get_pending_reviews` showed the wrong message.** It used
+  `get_messages(scammer_id, limit=5)[-1]` — the *most recent* message — as the
+  flagged "their message". But a `SuspicionFlag` records the specific
+  `message_id` it was raised against. With `auto_pause` disabled an outbound
+  reply is stored *after* the flag, so the review showed **our own outbound
+  reply labelled as the scammer's message**; with several flags on one scammer
+  every row showed the same latest message; and a flag older than the 5 most
+  recent wasn't even fetched. Reproduced via a throwaway script before fixing.
+- **Fix.** Added `Database.get_message_by_id(message_id)` (precise PK lookup,
+  `None` if absent) and made `get_pending_reviews` fetch
+  `flag.message_id`. Also extracted `Database._row_to_message` (mirrors the
+  WIP's `_row_to_scammer`) and reused it in `get_messages` — behavior-preserving
+  (verified: `[f(r) for r in reversed(rows)]` == old `list(reversed([f(r)...]))`).
+- **Tests (+3).** DB: `get_message_by_id` round-trips + returns None for a
+  missing id. Queue: review shows the flagged message even when a newer outbound
+  exists; two flags on one scammer each carry their own message.
+
+Verified: `pytest` → 87 passed; two code-review finder sub-agents returned no
+findings (refactor behavior-preserving, `flag.message_id` falsy-guard safe since
+ids start at 1). Docs updated (ARCHITECTURE human-review note + test inventory).
+Not pushed (handled separately).
+
 ### 2026-06-17T12:54:16Z — Maintenance pass: review-flag lifecycle (queue could never drain)
 Fixed a real correctness bug in the human-review workflow (suite 65 → 71).
 
@@ -111,7 +147,10 @@ no regressions. Not pushed (handled separately).
   idempotent and use trusted-literal identifiers only.
 - **Review workflow**: flagged replies are withheld AND stored
   (`suspicion_log.proposed_response`) so `review_flagged.py` can show the exact
-  text. AI probes ("are you a bot?") force review regardless of heuristic score.
+  text. The queue pairs each flag with the message it was raised against
+  (`SuspicionFlag.message_id` → `Database.get_message_by_id`), not the latest
+  message — otherwise a later reply or a second flag would mislabel what's under
+  review. AI probes ("are you a bot?") force review regardless of heuristic score.
   Acting on a flag in the review tool (resume/pause) calls
   `Database.mark_flag_reviewed` → sets `human_reviewed`/`reviewed_at` so the flag
   leaves `get_unreviewed_flags()`; skip leaves it pending. Marking is per-flag

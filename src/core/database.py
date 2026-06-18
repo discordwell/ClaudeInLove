@@ -264,6 +264,20 @@ class Database:
 
     # ==================== Message Operations ====================
 
+    @staticmethod
+    def _row_to_message(row: aiosqlite.Row) -> Message:
+        """Map a ``messages`` row to a :class:`Message` (single source of truth)."""
+        return Message(
+            id=row["id"],
+            scammer_id=row["scammer_id"],
+            direction=MessageDirection(row["direction"]),
+            content=row["content"],
+            timestamp=datetime.fromisoformat(row["timestamp"]),
+            platform_message_id=row["platform_message_id"],
+            was_flagged=bool(row["was_flagged"]),
+            flag_reason=row["flag_reason"],
+        )
+
     async def add_message(
         self,
         scammer_id: str,
@@ -311,7 +325,11 @@ class Database:
         limit: int = 100,
         offset: int = 0
     ) -> List[Message]:
-        """Get messages for a scammer, newest first."""
+        """Get a page of a scammer's messages in chronological order (oldest first).
+
+        The newest ``limit`` messages (after ``offset``) are selected, then
+        reversed so callers receive them oldest-first for context building.
+        """
         async with self._conn.execute(
             """SELECT * FROM messages
                WHERE scammer_id = ?
@@ -321,21 +339,23 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
 
-        messages = [
-            Message(
-                id=row["id"],
-                scammer_id=row["scammer_id"],
-                direction=MessageDirection(row["direction"]),
-                content=row["content"],
-                timestamp=datetime.fromisoformat(row["timestamp"]),
-                platform_message_id=row["platform_message_id"],
-                was_flagged=bool(row["was_flagged"]),
-                flag_reason=row["flag_reason"],
-            )
-            for row in rows
-        ]
-        # Return in chronological order
-        return list(reversed(messages))
+        # Selected newest-first; return chronological (oldest first).
+        return [self._row_to_message(row) for row in reversed(rows)]
+
+    async def get_message_by_id(self, message_id: int) -> Optional[Message]:
+        """Fetch a single message by its primary key, or ``None`` if absent.
+
+        Used by the review queue to show the exact message a suspicion flag was
+        raised against (``SuspicionFlag.message_id``) rather than guessing from
+        the most recent message, which may be a later reply or belong to a
+        different flag entirely.
+        """
+        async with self._conn.execute(
+            "SELECT * FROM messages WHERE id = ?",
+            (message_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return self._row_to_message(row) if row else None
 
     async def get_recent_messages(self, scammer_id: str, count: int = 20) -> List[Message]:
         """Get the most recent messages for context."""

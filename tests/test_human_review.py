@@ -91,6 +91,38 @@ async def test_get_pending_reviews_reflects_pause_state(db):
     assert reviews[0]["proposed_response"] == "of course i'm real!"
 
 
+async def test_get_pending_reviews_shows_the_flagged_message_not_the_latest(db):
+    # The review must show the message the flag was raised against, even when a
+    # newer message exists. With auto_pause disabled the bot's own reply is
+    # stored *after* the flag, so "the latest message" is the wrong one — and
+    # showing our outbound reply as "their message" would mislead the reviewer.
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
+    flagged = await db.add_message(scammer.id, MessageDirection.INBOUND, "are you real?")
+    await db.log_suspicion(
+        scammer.id, flagged.id, 0.9, "AI probe", proposed_response="of course!",
+    )
+    # A later outbound reply becomes the most recent message in the table.
+    await db.add_message(scammer.id, MessageDirection.OUTBOUND, "of course i'm real!!")
+
+    reviews = await HumanReviewQueue(db).get_pending_reviews()
+    assert len(reviews) == 1
+    assert reviews[0]["message"] == "are you real?"
+
+
+async def test_get_pending_reviews_pairs_each_flag_with_its_own_message(db):
+    # Two flags on the same scammer for two different messages: each review row
+    # must carry the right message, not a single shared "most recent" one.
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
+    m1 = await db.add_message(scammer.id, MessageDirection.INBOUND, "send me a gift card")
+    await db.log_suspicion(scammer.id, m1.id, 0.95, "money request", proposed_response="hmm")
+    m2 = await db.add_message(scammer.id, MessageDirection.INBOUND, "are you a bot?")
+    await db.log_suspicion(scammer.id, m2.id, 0.8, "AI probe", proposed_response="no!")
+
+    reviews = await HumanReviewQueue(db).get_pending_reviews()
+    by_message = {r["message"] for r in reviews}
+    assert by_message == {"send me a gift card", "are you a bot?"}
+
+
 async def test_mark_reviewed_removes_flag_from_pending(db):
     scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
     msg = await db.add_message(scammer.id, MessageDirection.INBOUND, "are you a bot?")

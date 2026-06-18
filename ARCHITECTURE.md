@@ -68,7 +68,12 @@ Signal Desktop ──(CDP poll)──► Main Loop ──► Context Manager ─
   DB, so the running loop, a restart, and the standalone `review_flagged.py`
   tool all agree. When a reply is withheld, the exact text the bot wanted to
   send is stored on the suspicion log (`proposed_response`) so the reviewer can
-  judge it, not just its score. Acting on a flag (resume or pause) calls
+  judge it, not just its score. The queue pairs each flag with the exact
+  message it was raised against (`SuspicionFlag.message_id` →
+  `Database.get_message_by_id`), never merely the latest message — otherwise a
+  second flag, or an auto-sent reply stored after the flag, would mislabel what
+  is under review (even showing our own outbound reply as "their message").
+  Acting on a flag (resume or pause) calls
   `mark_flag_reviewed`, which sets `human_reviewed`/`reviewed_at`; without it the
   unreviewed-flags query would re-surface every flag forever and the queue could
   never be drained. Skipping leaves the flag pending.
@@ -104,7 +109,8 @@ and the optional path overrides `DATA_DIR` / `LOG_DIR` / `BROWSER_USER_DATA_DIR`
 heuristics and LLM-result parsing, context compression, the database (including
 schema migration of older DBs, durable dedup, and the stats aggregates),
 persona building, phone normalization, message fingerprinting, the stats
-overview, and DB-backed pause state. The main-loop orchestration
+overview, DB-backed pause state, and that the review queue surfaces each flag's
+own message (not just the most recent one). The main-loop orchestration
 (`handle_incoming_message`) is covered end-to-end with the real database,
 context manager, suspicion checker and review queue, faking only the two
 browser-driven clients — including that a repeated real platform id is answered

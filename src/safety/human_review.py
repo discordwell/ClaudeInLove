@@ -97,16 +97,23 @@ class HumanReviewQueue:
 
         reviews = []
         for flag in flags:
-            # Get the associated message
-            messages = await self.db.get_messages(flag.scammer_id, limit=5)
-            last_message = messages[-1] if messages else None
+            # Show the message the flag was actually raised against, not merely
+            # the most recent one. With auto_pause disabled an outbound reply is
+            # stored after the flag, and a scammer can have several flags at
+            # once, so "the latest message" is frequently the wrong one (and may
+            # be our own reply). Look it up by the flag's recorded message id.
+            flagged_message = (
+                await self.db.get_message_by_id(flag.message_id)
+                if flag.message_id
+                else None
+            )
 
             reviews.append({
                 "flag_id": flag.id,
                 "scammer_id": flag.scammer_id,
                 "score": flag.suspicion_score,
                 "reason": flag.reason,
-                "message": last_message.content if last_message else "N/A",
+                "message": flagged_message.content if flagged_message else "N/A",
                 "proposed_response": flag.proposed_response,
                 "is_paused": await self.is_paused(flag.scammer_id),
             })
