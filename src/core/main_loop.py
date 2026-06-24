@@ -20,6 +20,7 @@ from ..llm.prompt_builder import build_full_prompt
 from ..llm.context_manager import ContextManager
 from ..persona.persona_builder import load_or_create_persona, create_default_persona
 from ..safety.suspicion_checker import SuspicionChecker
+from ..safety.content_guard import ContentGuard
 from ..safety.human_review import HumanReviewQueue
 from ..utils.logging import logger, log_message, log_status, log_error
 
@@ -44,6 +45,7 @@ class ClaudeInLove:
         self.chatgpt: Optional[ChatGPTClient] = None
         self.context_manager: Optional[ContextManager] = None
         self.suspicion_checker: Optional[SuspicionChecker] = None
+        self.content_guard: Optional[ContentGuard] = None
         self.review_queue: Optional[HumanReviewQueue] = None
         self.persona = None
 
@@ -83,6 +85,9 @@ class ClaudeInLove:
 
         # Suspicion checker
         self.suspicion_checker = SuspicionChecker(self.chatgpt)
+
+        # Hard-safety content guard (never send money / leak PII)
+        self.content_guard = ContentGuard()
 
         # Human review queue
         self.review_queue = HumanReviewQueue(self.db)
@@ -225,12 +230,38 @@ class ClaudeInLove:
                 scammer_id=scammer.id,
             )
 
-            # Flag for human review when the drafted reply looks AI-ish OR the
-            # scammer is actively probing for a bot.
-            should_review = score >= self.config.suspicion_threshold or is_ai_probe
+            # Hard-safety backstop: regardless of how human the reply sounds,
+            # never let one that commits to sending money or leaks PII go out.
+            # The suspicion checker only screens for "AI tells", so a perfectly
+            # casual "sure, I'll wire you the $500" scores ~0 and would sail
+            # through — exactly the outcome this tool exists to prevent against
+            # a counterparty actively trying to extract money/identifiers.
+            guard = self.content_guard.check(response)
+
+            # Flag for human review when the drafted reply looks AI-ish, the
+            # scammer is actively probing for a bot, OR it trips the safety
+            # guard. A safety violation always wins: it forces the withhold and
+            # the pause even if auto-pause is off (see force_pause below).
+            should_review = (
+                score >= self.config.suspicion_threshold
+                or is_ai_probe
+                or not guard.is_safe
+            )
             if should_review:
                 if is_ai_probe and score < self.config.suspicion_threshold:
                     reason = f"{reason}; AI probe in their message"
+                if not guard.is_safe:
+                    safety = f"SAFETY: {guard.reason}"
+                    # If neither the suspicion score nor a probe put us here,
+                    # lead with the safety reason instead of prefixing the
+                    # checker's "No issues detected" sentinel (it found no AI
+                    # tells — true, but it would read as contradictory).
+                    only_guard = (
+                        score < self.config.suspicion_threshold and not is_ai_probe
+                    )
+                    reason = safety if only_guard else f"{reason}; {safety}"
+                    # Surface safety violations at the top of the review queue.
+                    score = max(score, 1.0)
 
                 await self.review_queue.flag_for_review(
                     scammer_id=scammer.id,
@@ -238,9 +269,10 @@ class ClaudeInLove:
                     proposed_response=response,
                     suspicion_score=score,
                     reason=reason,
+                    force_pause=not guard.is_safe,
                 )
 
-                if self.config.auto_pause_on_flag:
+                if self.config.auto_pause_on_flag or not guard.is_safe:
                     log_status("Response withheld pending human review")
                     return
 

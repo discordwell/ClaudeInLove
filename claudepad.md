@@ -2,6 +2,54 @@
 
 ## Session Summaries (newest first)
 
+### 2026-06-24T00:00:00Z — Maintenance pass: enforce "never send money/PII" in code (ContentGuard)
+One cohesive safety improvement (suite 99 → 158, +59). Closed the biggest latent
+risk in the system: the project's central invariant — *"waste time, never send
+money or real personal data"* — existed **only as prose** in `SYSTEM_PROMPT` and
+the persona template. There was **zero programmatic enforcement**. The
+`suspicion_checker` only screens for *AI tells*, not invariant violations.
+
+- **Reproduced the hole first.** A reply that literally agrees to wire $500 via
+  Western Union *and* includes an SSN scores **0.00** on `suspicion_checker`
+  (it's casual + human-sounding) and would be auto-sent — the exact worst case,
+  against a counterparty actively trying to extract money/PII.
+- **New `src/safety/content_guard.py`** (pure regex, no deps, browser-free like
+  `suspicion_checker`). `ContentGuard.check(reply) -> GuardResult(is_safe,
+  violations)`. Two axes: (1) **money commitment** — affirmative "I'll
+  send/wire/transfer/pay/deposit … money/$/gift cards/crypto/fee", payment-app
+  use ("venmo you"), buying gift cards, "the money is on its way", and an
+  unambiguous-money-verb+bare-amount rule ("wire the 500"); (2) **PII** — SSN,
+  13+ digit card/account runs, labelled bank numbers, ETH/BTC wallets.
+- **Precision-first** (the persona *must* discuss money to stall). Money checks
+  run **clause by clause** (`_CLAUSE_SPLIT` on `.!?;,`/`but`/`though`), skip any
+  clause with a negation (`can't`, `won't`, `not sending`, …), and require the
+  verb+object within ~3 words. So deflections ("my account's frozen", "I can't
+  send anything") and hyperbole ("the 100 reasons I love you, but not a dime")
+  pass; only real commitments trip it.
+- **Integration (`main_loop.handle_incoming_message`).** Guard runs alongside
+  the suspicion check. A violation **always** withholds + pauses, overriding
+  `auto_pause_on_flag` (the opt-out governs AI-suspicion flags, not hard-safety
+  ones) via new `HumanReviewQueue.flag_for_review(force_pause=...)`; logged score
+  floored to 1.0 so it sorts to the top of the review queue; reason leads with
+  `SAFETY: …`.
+- **Tests (+59).** `test_content_guard.py`: recall (money + PII blocked) and
+  **precision** (ordinary chatter, deflections, phone numbers, hyperbole pass),
+  plus an adversarial-corpus assertion that the dangerous reply is invisible to
+  the suspicion checker (so the block is attributable to the guard). Main-loop
+  integration: withheld+paused even with auto-pause off; safe reply unaffected.
+  `flag_for_review(force_pause=True)` overrides auto-pause-off.
+
+Verified: `pytest` → 158 passed; `compileall` clean; neuter-test (gut the guard
+→ 15 tests fail, restore → green); ReDoS check (linear time, 109ms on a 208KB
+input); end-to-end wet test drove a dangerous reply through the full pipeline →
+withheld, paused, top-priority flag with both violations in the reason.
+Code-review sub-agent: no blockers; found a real recall gap (negation suppressed
+the *whole* sentence, so "warm capitulations" like "I shouldn't, but I'll send
+the money" leaked) → fixed with clause-splitting + bare-amount rule, both pinned
+by new must-block tests. Docs updated (README safety section + diagram,
+ARCHITECTURE module map/design points/testing). Not pushed (orchestrator
+handles that).
+
 ### 2026-06-23T00:00:00Z — Maintenance pass: activate the dormant operator-notes feature
 One cohesive improvement (suite 91 → 99). Turned a fully-plumbed-but-dead
 capability into a working operator tool.
@@ -247,6 +295,20 @@ no regressions. Not pushed (handled separately).
   `Database.mark_flag_reviewed` → sets `human_reviewed`/`reviewed_at` so the flag
   leaves `get_unreviewed_flags()`; skip leaves it pending. Marking is per-flag
   (`flag_id`), independent of the scammer's pause state (`scammers.status`).
+- **Two-layer reply screening (`safety/`)**: `suspicion_checker` answers "does
+  this sound like an AI?" (heuristic + optional LLM, score vs.
+  `suspicion_threshold`). `content_guard` answers the *different* question "would
+  this reply break the hard invariants?" — never commit to sending money, never
+  emit PII (SSN/card/account/crypto-wallet). They are independent: a casual
+  "sure I'll wire you $500" scores ~0 on suspicion yet must be blocked, so the
+  guard runs regardless of score. A guard violation is authoritative: it
+  **always** withholds + pauses, overriding `auto_pause_on_flag`
+  (`flag_for_review(force_pause=True)`). Guard is precision-first and pure regex:
+  money checks are clause-split + negation-skipping (deflections like "I can't
+  send money" are the persona working as intended and must pass); PII checks run
+  on the whole reply. Adding/loosening a money pattern? Re-run the precision
+  corpus in `test_content_guard.py` — false positives cripple the bot's
+  autonomy, not just its safety.
 - **Operator notes (`scammers.notes`)**: free-text the operator attaches to a
   conversation via the review tool's **[N]ote** action
   (`HumanReviewQueue.add_note` → `Database.set_scammer_notes`). Notes append

@@ -8,6 +8,7 @@ Scam-baiter automation tool that wastes romance scammers' time with AI-powered r
 - **ChatGPT web automation** - Free LLM responses using your ChatGPT Plus subscription
 - **Facebook persona scraping** - Build convincing alter ego from your own profile
 - **Suspicion detection** - Check responses before sending to avoid AI detection
+- **Hard-safety content guard** - Block any reply that would actually send money or leak PII
 - **Human review queue** - Flag and pause suspicious conversations
 - **Context compression** - Handle long conversations efficiently
 
@@ -75,6 +76,30 @@ MAX_RESPONSE_DELAY=180
    - Wait a human-like delay
    - Send the response
 
+## Safety Guardrails
+
+Two independent checks screen every drafted reply before it can be sent:
+
+1. **Suspicion checker** — *"does this reply sound like an AI?"* Heuristic (plus
+   optional LLM) scoring of robotic tells. A high score flags the reply for
+   review; whether that also withholds it depends on `AUTO_PAUSE_ON_FLAG`.
+2. **Content guard** — *"does this reply break the rules the tool exists to
+   enforce?"* A deterministic backstop for the hard invariants: **never commit
+   to sending money** (cash, wire, gift cards, crypto) and **never emit a real
+   personal/financial identifier** (SSN, card/account/routing number, crypto
+   wallet). These are a different failure mode from sounding robotic — a
+   perfectly casual *"sure babe, I'll wire you the $500 on Western Union"*
+   scores ~0 on the suspicion checker, yet is the single worst thing the bot
+   could do against a counterparty actively trying to extract exactly that.
+
+A content-guard violation **always** withholds the reply and pauses the
+conversation for human review, regardless of the suspicion score **or** the
+`AUTO_PAUSE_ON_FLAG` setting — the auto-pause opt-out governs ordinary
+AI-suspicion flags, not hard-safety ones. The guard is precision-first: the
+persona is *supposed* to talk about money in order to stall ("my account's
+frozen", "I can't send anything till payday"), so deflections are left alone;
+only an affirmative commitment to send trips it.
+
 ## Review Flagged Conversations
 
 ```bash
@@ -126,10 +151,12 @@ pytest
 ```
 
 The tests cover the deterministic logic (models, prompts, suspicion scoring,
-context compression, database + schema migration, persona building, phone
-normalization, message deduplication — including the durable cross-restart
-check — the engagement-stats aggregation, and pause state) as well as the
-main-loop orchestration end-to-end with the browser clients faked. The
+the content-guard money/PII checks — both recall and precision so deflections
+aren't blocked — context compression, database + schema migration, persona
+building, phone normalization, message deduplication — including the durable
+cross-restart check — the engagement-stats aggregation, and pause state) as
+well as the main-loop orchestration end-to-end with the browser clients faked
+(including that a money/PII reply is withheld even with auto-pause off). The
 Playwright-driven clients themselves are exercised manually since they need a
 live browser.
 
@@ -142,7 +169,8 @@ Signal Desktop ─┐
                 ├─► Main Loop ─► ChatGPT Web
 Messenger (TBD)─┘       │
                         ├─► SQLite Storage
-                        ├─► Suspicion Checker
+                        ├─► Suspicion Checker  (AI-detection risk)
+                        ├─► Content Guard      (never send money / PII)
                         └─► Persona Context
 ```
 

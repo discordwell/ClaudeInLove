@@ -13,6 +13,7 @@ from src.core.models import (
 )
 from src.llm.context_manager import ContextManager
 from src.safety.suspicion_checker import SuspicionChecker
+from src.safety.content_guard import ContentGuard
 from src.safety.human_review import HumanReviewQueue
 from src.persona.persona_builder import create_default_persona
 
@@ -58,6 +59,7 @@ def make_app(db, monkeypatch, chatgpt=None, signal=None):
     app.signal = signal or FakeSignal()
     app.context_manager = ContextManager(db, app.chatgpt)
     app.suspicion_checker = SuspicionChecker(app.chatgpt)
+    app.content_guard = ContentGuard()
     app.review_queue = HumanReviewQueue(db)
     app.persona = create_default_persona()
     # Make the human-like response delay instant and deterministic.
@@ -285,6 +287,76 @@ async def test_synthetic_id_duplicate_is_not_suppressed_across_calls(db, monkeyp
         if m.direction == MessageDirection.INBOUND
     ]
     assert len(inbound) == 2
+
+
+# A perfectly casual, human-sounding reply that nonetheless violates the hard
+# safety invariants: it commits to sending money AND leaks an SSN. The
+# suspicion checker scores this ~0 (no AI tells), so only the content guard
+# stops it.
+DANGEROUS_REPLY = (
+    "aww ok babe, i'll wire you the $500 on western union tomorrow, "
+    "my ssn is 123-45-6789 if you need it"
+)
+
+
+async def test_safety_violation_is_withheld_even_without_autopause(db, monkeypatch):
+    # This is the headline guarantee: the operator has DISABLED auto-pause (so
+    # ordinary AI-suspicion flags still get sent), yet a reply that would send
+    # money / leak PII must still be withheld and the conversation paused —
+    # sending it is the exact failure the whole tool exists to prevent.
+    chatgpt = FakeChatGPT(DANGEROUS_REPLY)
+    signal = FakeSignal(ok=True)
+    app = make_app(db, monkeypatch, chatgpt=chatgpt, signal=signal)
+    monkeypatch.setattr(app.config, "auto_pause_on_flag", False)
+
+    await app.handle_incoming_message(incoming("send me the money my love"))
+
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, SENDER)
+
+    # Nothing sent, no outbound stored — the reply was held back.
+    assert signal.sent == []
+    msgs = await db.get_messages(scammer.id)
+    assert [m.direction for m in msgs] == [MessageDirection.INBOUND]
+
+    # The conversation is paused for a human despite auto-pause being off.
+    assert await db.get_scammer_status(scammer.id) == ScammerStatus.PAUSED
+
+    # The withheld reply is queued with a SAFETY reason and a top-priority score.
+    flags = await db.get_unreviewed_flags()
+    assert len(flags) == 1
+    assert flags[0].proposed_response == DANGEROUS_REPLY
+    assert "SAFETY" in flags[0].reason
+    assert flags[0].suspicion_score >= 1.0
+
+
+async def test_safety_violation_proves_suspicion_checker_alone_would_send(db, monkeypatch):
+    # Guard rail on the test itself: confirm the dangerous reply really is
+    # invisible to the suspicion checker (scores below threshold), so the
+    # withholding above is attributable to the content guard, not a lucky
+    # AI-tell match.
+    app = make_app(db, monkeypatch)
+    score, _ = await app.suspicion_checker.check(
+        our_response=DANGEROUS_REPLY,
+        their_message="send me the money my love",
+        scammer_id="x",
+    )
+    assert score < app.config.suspicion_threshold
+    assert not app.content_guard.check(DANGEROUS_REPLY).is_safe
+
+
+async def test_safe_reply_is_unaffected_by_the_guard(db, monkeypatch):
+    # A clean casual reply trips neither the suspicion checker nor the guard, so
+    # it goes out exactly as before — the guard only adds blocks, never removes.
+    chatgpt = FakeChatGPT("haha you're too much, tell me about your day")
+    signal = FakeSignal(ok=True)
+    app = make_app(db, monkeypatch, chatgpt=chatgpt, signal=signal)
+
+    await app.handle_incoming_message(incoming("good morning gorgeous"))
+
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, SENDER)
+    assert signal.sent == [(SENDER, "haha you're too much, tell me about your day")]
+    assert await db.get_scammer_status(scammer.id) == ScammerStatus.ACTIVE
+    assert await db.get_unreviewed_flags() == []
 
 
 async def test_send_failure_does_not_store_outbound(db, monkeypatch):

@@ -37,13 +37,18 @@ class HumanReviewQueue:
         message: Message,
         proposed_response: str,
         suspicion_score: float,
-        reason: str
+        reason: str,
+        force_pause: bool = False
     ):
         """
         Flag a conversation for human review.
 
-        If auto_pause is enabled, the scammer will be paused
-        and no automatic responses will be sent.
+        The conversation is paused (so no automatic responses go out) when
+        ``auto_pause_on_flag`` is enabled **or** ``force_pause`` is set.
+        ``force_pause`` is for hard-safety violations (the reply would send
+        money or leak PII): those must always be held no matter how the
+        operator configured auto-pause, since sending one is the exact outcome
+        the tool exists to prevent.
         """
         # Log the suspicion, keeping the withheld reply so a human reviewer
         # can see exactly what the bot wanted to send before deciding.
@@ -55,7 +60,7 @@ class HumanReviewQueue:
             proposed_response=proposed_response,
         )
 
-        if self.config.auto_pause_on_flag:
+        if self.config.auto_pause_on_flag or force_pause:
             await self.pause(scammer_id)
 
         # Log to console for immediate visibility

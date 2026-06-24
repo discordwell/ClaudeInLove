@@ -4,8 +4,9 @@ ClaudeInLove is a **reactive** scam-baiting assistant. It does not seek out
 targets: it watches the operator's own Signal Desktop for inbound messages from
 romance scammers (who initiate contact), drafts stalling replies through the
 operator's own ChatGPT web session, screens each reply for "this might be an AI"
-tells, and can pause any conversation for human review. The goal is to waste a
-scammer's time, never to send money or real personal data.
+tells **and for hard-safety violations** (a reply that would actually send money
+or leak PII), and can pause any conversation for human review. The goal is to
+waste a scammer's time, never to send money or real personal data.
 
 ## High-level flow
 
@@ -15,14 +16,15 @@ Signal Desktop ──(CDP poll)──► Main Loop ──► Context Manager ─
                                    │                                   ▼
                                    │                            ChatGPT (web)
                                    ▼                                   │
-                            Suspicion Checker ◄─────── proposed reply ─┘
+                  Suspicion Checker + Content Guard ◄─ proposed reply ─┘
                                    │
-                    score < threshold │ score ≥ threshold
+              safe & score<thresh  │  AI tells (score≥thresh) OR safety violation
                                    ▼                  ▼
                           human-like delay     Human Review Queue
                                    │            (pause + flag in DB)
-                                   ▼
-                         Signal Desktop (outbound)
+                                   ▼            (a safety violation always
+                         Signal Desktop          withholds + pauses, even
+                            (outbound)            when auto-pause is off)
 
                  SQLite stores scammers, messages, snapshots,
                  persona, and the suspicion log throughout.
@@ -43,6 +45,7 @@ Signal Desktop ──(CDP poll)──► Main Loop ──► Context Manager ─
 | `platforms` | `base.py` | `PlatformClient` ABC (connect / disconnect / get_new_messages / send_message / get_conversations). |
 | `platforms` | `signal_client.py` | Signal Desktop via CDP. Polls unread conversations, extracts inbound messages, sends replies. Dedups by DOM id or a stable content fingerprint. |
 | `safety` | `suspicion_checker.py` | Heuristic + optional LLM scoring of how "AI-like" a draft reply looks. No browser dependency (LLM client is injected). |
+| `safety` | `content_guard.py` | Deterministic backstop enforcing the hard invariants on every outgoing reply: never commit to **sending money** (cash/wire/gift cards/crypto), never emit **PII** (SSN, card/account/routing number, crypto wallet). Pure regex, no deps. Precision-first so money *deflections* aren't blocked. |
 | `safety` | `human_review.py` | Pause/resume/archive + review queue + operator notes. Pause state is **DB-backed** so it survives restarts and is shared across processes. |
 | `persona` | `facebook_scraper.py` | One-time scrape of the operator's *own* Facebook profile (Playwright). |
 | `persona` | `persona_builder.py` | Turns scraped data into a persona document; provides a default persona for testing. |
@@ -102,6 +105,28 @@ Signal Desktop ──(CDP poll)──► Main Loop ──► Context Manager ─
   for a bot ("are you a robot?"), the loop flags the exchange for review even
   when the drafted reply scores below the suspicion threshold — that is exactly
   the moment a person should decide what happens next.
+- **Hard-safety violations are blocked in code, not just in the prompt.** The
+  invariant "never send money or real personal data" lived only in the system
+  prompt and the persona template — prose the LLM may ignore under pressure or
+  be steered past by an injection in the scammer's own message. `content_guard`
+  is the deterministic enforcement: it screens every drafted reply for an
+  affirmative commitment to send funds (money/cash/$/gift cards/crypto, payment
+  apps, buying gift cards) and for personal/financial identifiers (SSN,
+  card/account-length numbers, labelled bank numbers, crypto wallets). This is a
+  *distinct* failure mode from sounding robotic: a casual "sure, I'll wire you
+  the $500" scores ~0 on `suspicion_checker` yet is the worst possible outcome,
+  so the guard runs independently of the suspicion score. A violation **always**
+  forces review *and* withholds the reply, overriding `auto_pause_on_flag`
+  (`HumanReviewQueue.flag_for_review(force_pause=...)`); the loop also raises the
+  logged score to `1.0` so the flag sorts to the top of the review queue. The
+  guard is **precision-first**: the persona is meant to discuss money to stall
+  ("my account's frozen", "I can't send anything"), so money checks run sentence
+  by sentence, skip any sentence carrying a negation, and require the sending
+  verb and its money object to sit within a few words (an unrelated
+  co-occurrence like "send you a hug instead, money's too tight" does not trip
+  it). PII/identifier checks run on the whole reply, since those strings are
+  never legitimate to emit. The 13-digit floor on the card/account heuristic
+  sits above any phone number, so "call me at +1 555 123 4567" is left alone.
 - **Deduplication must be time-independent _and_ durable.** When a Signal
   message has no stable DOM id, `SignalClient._message_fingerprint(sender,
   content)` derives a deterministic id so the same message is never answered
@@ -127,7 +152,11 @@ and the optional path overrides `DATA_DIR` / `LOG_DIR` / `BROWSER_USER_DATA_DIR`
 ## Testing
 
 `pytest` covers the deterministic layers — models, prompt building, suspicion
-heuristics and LLM-result parsing, context compression, the database (including
+heuristics and LLM-result parsing, the content guard (recall: money commitments
+and PII are blocked; **precision**: ordinary chatter and money *deflections* are
+not, plus an adversarial corpus assertion that the dangerous reply is invisible
+to the suspicion checker so the block is attributable to the guard), context
+compression, the database (including
 schema migration of older DBs, durable dedup, and the stats aggregates),
 persona building, phone normalization, message fingerprinting, the stats
 overview, DB-backed pause state, the conversation lifecycle (pause / resume /
@@ -140,7 +169,9 @@ re-prompts for a decision). The main-loop
 orchestration (`handle_incoming_message`) is covered end-to-end with the real
 database, context manager, suspicion checker and review queue, faking only the
 two browser-driven clients — including that paused **and archived** conversations
-are skipped entirely, and that a repeated real platform id is answered only once
+are skipped entirely, that a money/PII reply is withheld and the conversation
+paused **even with auto-pause disabled** (and that a safe reply is unaffected),
+and that a repeated real platform id is answered only once
 while a repeated content fingerprint is not suppressed across calls. The Playwright-driven clients (`signal_client`,
 `chatgpt_client`, `facebook_scraper`) require a live browser and are exercised
 manually. Run:

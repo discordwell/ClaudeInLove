@@ -75,6 +75,29 @@ async def test_flag_for_review_without_autopause_keeps_active(db, monkeypatch):
     assert len(await db.get_unreviewed_flags()) == 1
 
 
+async def test_flag_for_review_force_pause_overrides_autopause_off(db, monkeypatch):
+    # A hard-safety flag (reply would send money / leak PII) must pause the
+    # conversation even when the operator disabled auto-pause for ordinary
+    # AI-suspicion flags.
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
+    msg = await db.add_message(scammer.id, MessageDirection.OUTBOUND, "hi")
+
+    queue = HumanReviewQueue(db)
+    monkeypatch.setattr(queue.config, "auto_pause_on_flag", False)
+
+    await queue.flag_for_review(
+        scammer_id=scammer.id,
+        message=msg,
+        proposed_response="i'll wire you the money",
+        suspicion_score=1.0,
+        reason="SAFETY: reply appears to commit to sending money/payment",
+        force_pause=True,
+    )
+
+    assert await queue.is_paused(scammer.id) is True
+    assert len(await db.get_unreviewed_flags()) == 1
+
+
 async def test_get_pending_reviews_reflects_pause_state(db):
     scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
     msg = await db.add_message(scammer.id, MessageDirection.INBOUND, "are you real?")
