@@ -77,6 +77,24 @@ async def test_get_scammer_status_unknown_returns_none(db):
     assert await db.get_scammer_status("does-not-exist") is None
 
 
+async def test_notes_round_trip(db):
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
+    # A fresh scammer has no notes.
+    assert await db.get_scammer_notes(scammer.id) is None
+
+    await db.set_scammer_notes(scammer.id, "claims to be a soldier in Syria")
+    assert await db.get_scammer_notes(scammer.id) == "claims to be a soldier in Syria"
+
+    # Setting only touches notes, not the rest of the row.
+    refreshed = await db.get_or_create_scammer(Platform.SIGNAL, "+1", None)
+    assert refreshed.notes == "claims to be a soldier in Syria"
+    assert refreshed.status == ScammerStatus.ACTIVE
+
+
+async def test_get_scammer_notes_unknown_returns_none(db):
+    assert await db.get_scammer_notes("does-not-exist") is None
+
+
 async def test_status_persists_across_reconnect(tmp_path):
     path = tmp_path / "persist.db"
 

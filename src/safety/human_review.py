@@ -104,6 +104,31 @@ class HumanReviewQueue:
         await self.db.set_scammer_status(scammer_id, ScammerStatus.ARCHIVED)
         logger.info(f"Archived conversation with {scammer_id}")
 
+    async def add_note(self, scammer_id: str, note: str) -> str:
+        """
+        Append a free-text note to a scammer and return the combined notes.
+
+        Notes accumulate (newline-separated) so observations gathered across
+        several review sessions are all preserved, and they are not just a paper
+        trail: ``build_full_prompt`` injects them into every subsequent reply as
+        ``[Notes about this scammer: ...]``, so a note like "claims to be an
+        oil-rig engineer named David" actually steers the persona's future
+        answers. A blank/whitespace note is ignored (returns the existing notes
+        unchanged) so an accidental empty entry never adds a stray blank line.
+
+        Unlike resume/pause/archive, taking a note is **not** a review decision:
+        it does not touch the scammer's status or mark any flag reviewed.
+        """
+        note = (note or "").strip()
+        existing = await self.db.get_scammer_notes(scammer_id)
+        if not note:
+            return existing or ""
+
+        combined = f"{existing}\n{note}" if existing else note
+        await self.db.set_scammer_notes(scammer_id, combined)
+        logger.info(f"Added note for {scammer_id}")
+        return combined
+
     async def get_pending_reviews(self) -> List[dict]:
         """Get all pending human reviews."""
         flags = await self.db.get_unreviewed_flags()
@@ -126,6 +151,10 @@ class HumanReviewQueue:
             # reviewer can tell, say, an archived conversation from a live one.
             status = await self.db.get_scammer_status(flag.scammer_id)
 
+            # Surface any operator notes so the reviewer sees the context that is
+            # already steering the persona's replies, and can build on it.
+            notes = await self.db.get_scammer_notes(flag.scammer_id)
+
             reviews.append({
                 "flag_id": flag.id,
                 "scammer_id": flag.scammer_id,
@@ -135,6 +164,7 @@ class HumanReviewQueue:
                 "proposed_response": flag.proposed_response,
                 "status": status.value if status else "unknown",
                 "is_paused": status == ScammerStatus.PAUSED,
+                "notes": notes,
             })
 
         return reviews
@@ -153,6 +183,7 @@ async def interactive_review_session(db: Database):
 
     console.print(f"\n[bold]Found {len(reviews)} pending reviews[/bold]\n")
 
+    quit_requested = False
     for i, review in enumerate(reviews, 1):
         console.print(f"[bold cyan]═══ Review {i}/{len(reviews)} ═══[/bold cyan]")
         console.print(f"Scammer: {review['scammer_id'][:12]}...")
@@ -163,28 +194,56 @@ async def interactive_review_session(db: Database):
             f"Proposed reply (withheld): {review['proposed_response'] or 'N/A'}"
         )
         console.print(f"Status: {review['status'].upper()}")
+        if review.get("notes"):
+            console.print(f"Notes: {review['notes']}")
         console.print()
 
-        # Get user action
-        action = input("[R]esume / [P]ause / [A]rchive / [S]kip / [Q]uit: ").lower()
-
-        # Resume, Pause and Archive are all decisions, so the flag is handled and
-        # is marked reviewed (it won't resurface next run). Skip leaves it
+        # Loop on this one flag until a terminal action is taken. Resume, Pause
+        # and Archive are all decisions, so they handle the flag (mark it
+        # reviewed → it won't resurface next run) and move on. Taking a Note is
+        # *not* a decision: it annotates the conversation and re-prompts so the
+        # operator still chooses what to do with the flag. Skip leaves it
         # pending; Quit stops without touching the remaining flags.
-        if action == 'r':
-            await queue.resume(review['scammer_id'])
-            await queue.mark_reviewed(review['flag_id'])
-            console.print("[green]Resumed[/green]")
-        elif action == 'p':
-            await queue.pause(review['scammer_id'])
-            await queue.mark_reviewed(review['flag_id'])
-            console.print("[yellow]Paused[/yellow]")
-        elif action == 'a':
-            await queue.archive(review['scammer_id'])
-            await queue.mark_reviewed(review['flag_id'])
-            console.print("[dim]Archived[/dim]")
-        elif action == 'q':
+        while True:
+            action = input(
+                "[R]esume / [P]ause / [A]rchive / [N]ote / [S]kip / [Q]uit: "
+            ).lower()
+
+            if action == 'r':
+                await queue.resume(review['scammer_id'])
+                await queue.mark_reviewed(review['flag_id'])
+                console.print("[green]Resumed[/green]")
+                break
+            elif action == 'p':
+                await queue.pause(review['scammer_id'])
+                await queue.mark_reviewed(review['flag_id'])
+                console.print("[yellow]Paused[/yellow]")
+                break
+            elif action == 'a':
+                await queue.archive(review['scammer_id'])
+                await queue.mark_reviewed(review['flag_id'])
+                console.print("[dim]Archived[/dim]")
+                break
+            elif action == 'n':
+                note = input("Note (blank to cancel): ").strip()
+                if note:
+                    review['notes'] = await queue.add_note(
+                        review['scammer_id'], note
+                    )
+                    console.print("[blue]Note added[/blue]")
+                else:
+                    console.print("[dim]No note added[/dim]")
+                # Re-prompt: the flag still needs a decision.
+                continue
+            elif action == 'q':
+                quit_requested = True
+                break
+            else:
+                # Skip (or any unrecognized key): leave the flag pending and
+                # advance to the next review.
+                break
+
+        if quit_requested:
             break
-        # Skip leaves the flag in the queue for a later session.
 
         console.print()

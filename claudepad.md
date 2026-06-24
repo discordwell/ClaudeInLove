@@ -2,6 +2,54 @@
 
 ## Session Summaries (newest first)
 
+### 2026-06-23T00:00:00Z — Maintenance pass: activate the dormant operator-notes feature
+One cohesive improvement (suite 91 → 99). Turned a fully-plumbed-but-dead
+capability into a working operator tool.
+
+- **`scammers.notes` was injected into the prompt but never written.**
+  `build_full_prompt` already adds `[Notes about this scammer: ...]` (and a test,
+  `test_full_prompt_includes_incoming_message_and_notes`, pins it), the column
+  exists, `_row_to_scammer` reads it, and `update_scammer` can write it — but a
+  grep proved *no code path ever set it*. So the prompt-steering feature could
+  never fire: notes were always `None`. Diagnosed as a half-implemented feature,
+  not a bug per se.
+- **Added focused DB accessors.** `Database.set_scammer_notes` /
+  `get_scammer_notes` (single-column read/write, mirroring the
+  `set_scammer_status`/`get_scammer_status` pattern — minimal blast radius vs.
+  introducing a new `get_scammer_by_id`).
+- **`HumanReviewQueue.add_note`** appends a note newline-separated (observations
+  accumulate across sessions and all flow into the prompt), ignores blank/
+  whitespace input (no stray blank line), returns the combined blob. Explicitly
+  *not* a review decision: it never touches `scammers.status` or marks a flag
+  reviewed.
+- **Review tool wiring.** `get_pending_reviews` now carries `notes`;
+  `interactive_review_session` shows existing notes and gains a **[N]ote**
+  action. Restructured the per-flag prompt into a `while True` loop so Note
+  re-prompts for a real action afterwards (the flag still needs a decision);
+  r/p/a/q and skip/unknown all preserve their old behavior exactly.
+- **Tests (+8).** DB notes round-trip + unknown→None; `add_note` appends &
+  ignores blanks; note doesn't change status/flags; pending-reviews includes
+  notes; interactive note-then-resume saves the note + drains the flag;
+  interactive blank-note-then-skip adds nothing + leaves the flag pending; and
+  an end-to-end test that two accumulated notes both reach `build_full_prompt`
+  (the headline value — notes steering replies). Added a `_scripted_input`
+  helper for multi-prompt interactive flows.
+- **Code-review follow-ups (2 finders + the review itself).** Review confirmed
+  the loop rewrite preserves every original branch (incl. quit skipping the
+  trailing print) and found no bugs. Took two suggestions: (1) the end-to-end
+  prompt test above; (2) hardened `_scripted_input` to raise a clear
+  `AssertionError` on exhaustion instead of an opaque PEP-479 "coroutine raised
+  StopIteration". Left the re-prompt-after-note loop as-is (unbounded only under
+  pathological constant 'n' input; re-prompting is the correct UX since the flag
+  still needs a decision).
+
+Verified: `pytest` → 99 passed; `compileall` clean; neuter-test proved the two
+key tests fail when `add_note` is gutted, then restored → green; wet-test drove
+the interactive session (note added → resumed) and confirmed the note then
+appears in the next `build_full_prompt` output. Docs updated (README review
+options, ARCHITECTURE human-review note + module map + test inventory). Not
+pushed (orchestrator handles that).
+
 ### 2026-06-18T11:08:15Z — Maintenance pass: conversation lifecycle (archive) + fix latent auto-respond gate
 One cohesive improvement (suite 87 → 91). Completed a dead enum value and fixed
 a latent correctness bug in the same stroke.
@@ -199,3 +247,11 @@ no regressions. Not pushed (handled separately).
   `Database.mark_flag_reviewed` → sets `human_reviewed`/`reviewed_at` so the flag
   leaves `get_unreviewed_flags()`; skip leaves it pending. Marking is per-flag
   (`flag_id`), independent of the scammer's pause state (`scammers.status`).
+- **Operator notes (`scammers.notes`)**: free-text the operator attaches to a
+  conversation via the review tool's **[N]ote** action
+  (`HumanReviewQueue.add_note` → `Database.set_scammer_notes`). Notes append
+  newline-separated and are injected into every reply by `build_full_prompt`
+  (`[Notes about this scammer: ...]`) to keep the persona consistent (claimed
+  backstory, money asks). Taking a note is *not* a review decision — it leaves
+  `status` and the flag's reviewed state untouched and re-prompts for an action.
+  Was a dormant feature before (prompt read it, nothing wrote it).

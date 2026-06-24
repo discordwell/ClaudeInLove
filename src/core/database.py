@@ -235,6 +235,30 @@ class Database:
             row = await cursor.fetchone()
         return ScammerStatus(row["status"]) if row else None
 
+    async def set_scammer_notes(self, scammer_id: str, notes: Optional[str]):
+        """Replace the free-text operator notes for a scammer.
+
+        A focused single-column write (mirrors :meth:`set_scammer_status`) so the
+        review tool can annotate a conversation without round-tripping the whole
+        row. The notes flow into future replies — ``build_full_prompt`` injects
+        them as ``[Notes about this scammer: ...]`` — so this is what lets an
+        operator steer the persona (e.g. record the scammer's claimed backstory).
+        """
+        await self._conn.execute(
+            "UPDATE scammers SET notes = ? WHERE id = ?",
+            (notes, scammer_id)
+        )
+        await self._conn.commit()
+
+    async def get_scammer_notes(self, scammer_id: str) -> Optional[str]:
+        """Get the stored notes for a scammer, or ``None`` if unknown/unset."""
+        async with self._conn.execute(
+            "SELECT notes FROM scammers WHERE id = ?",
+            (scammer_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return row["notes"] if row else None
+
     async def get_paused_scammer_ids(self) -> List[str]:
         """Get IDs of all scammers currently paused for human review."""
         async with self._conn.execute(

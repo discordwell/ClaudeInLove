@@ -89,6 +89,11 @@ can decide what to do. The choices are:
 - **Pause** — keep it on hold (no auto-replies) until you resume it.
 - **Archive** — retire the conversation for good (e.g. the scammer caught on or
   went silent); the bot never auto-replies again unless you later resume it.
+- **Note** — attach a free-text note about this scammer (their claimed
+  backstory, what they've asked for, anything to steer the persona). Notes
+  accumulate and are injected into every future reply, so the alter ego stays
+  consistent. Taking a note is *not* a decision: you're re-prompted for one of
+  the actions above afterwards, and the flag stays in the queue until you decide.
 - **Skip** — decide later; the flag stays in the queue.
 
 Resume, Pause and Archive are all decisions, so they write the new status to the

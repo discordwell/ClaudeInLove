@@ -43,7 +43,7 @@ Signal Desktop ──(CDP poll)──► Main Loop ──► Context Manager ─
 | `platforms` | `base.py` | `PlatformClient` ABC (connect / disconnect / get_new_messages / send_message / get_conversations). |
 | `platforms` | `signal_client.py` | Signal Desktop via CDP. Polls unread conversations, extracts inbound messages, sends replies. Dedups by DOM id or a stable content fingerprint. |
 | `safety` | `suspicion_checker.py` | Heuristic + optional LLM scoring of how "AI-like" a draft reply looks. No browser dependency (LLM client is injected). |
-| `safety` | `human_review.py` | Pause/resume + review queue. Pause state is **DB-backed** so it survives restarts and is shared across processes. |
+| `safety` | `human_review.py` | Pause/resume/archive + review queue + operator notes. Pause state is **DB-backed** so it survives restarts and is shared across processes. |
 | `persona` | `facebook_scraper.py` | One-time scrape of the operator's *own* Facebook profile (Playwright). |
 | `persona` | `persona_builder.py` | Turns scraped data into a persona document; provides a default persona for testing. |
 | `utils` | `browser.py` | `StealthBrowser` / `PersistentBrowser` (Playwright with a persistent profile for staying logged in). |
@@ -87,6 +87,17 @@ Signal Desktop ──(CDP poll)──► Main Loop ──► Context Manager ─
   `mark_flag_reviewed`, which sets `human_reviewed`/`reviewed_at`; without it the
   unreviewed-flags query would re-surface every flag forever and the queue could
   never be drained. Skipping leaves the flag pending.
+- **Operator notes steer the persona.** `build_full_prompt` injects
+  `scammers.notes` into every reply as `[Notes about this scammer: ...]`, but
+  nothing used to write that column, so the feature was dormant. The review tool
+  now offers a **Note** action (`HumanReviewQueue.add_note` →
+  `Database.set_scammer_notes`) that appends a free-text note (newline-separated,
+  so observations accumulate across sessions) to the conversation. A note is
+  *not* a review decision: it leaves `scammers.status` and the flag's reviewed
+  state untouched and re-prompts for a real action, so an annotated flag still
+  has to be resumed/paused/archived/skipped. The notes then flow into the next
+  generated reply, keeping the alter ego consistent with what the operator has
+  learned (claimed backstory, money asks, etc.).
 - **AI probes always escalate to a human.** If an inbound message is testing
   for a bot ("are you a robot?"), the loop flags the exchange for review even
   when the drafted reply scores below the suspicion threshold — that is exactly
@@ -121,7 +132,11 @@ schema migration of older DBs, durable dedup, and the stats aggregates),
 persona building, phone normalization, message fingerprinting, the stats
 overview, DB-backed pause state, the conversation lifecycle (pause / resume /
 archive, and that the review queue reports each conversation's real status and
-surfaces each flag's own message, not just the most recent one). The main-loop
+surfaces each flag's own message, not just the most recent one), and operator
+notes (round-trip persistence, that `add_note` appends rather than overwrites
+and ignores blanks, that the pending-review rows carry the notes, and that the
+interactive **Note** action saves a note without marking the flag reviewed and
+re-prompts for a decision). The main-loop
 orchestration (`handle_incoming_message`) is covered end-to-end with the real
 database, context manager, suspicion checker and review queue, faking only the
 two browser-driven clients — including that paused **and archived** conversations
