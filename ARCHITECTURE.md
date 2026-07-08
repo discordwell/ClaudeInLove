@@ -120,13 +120,26 @@ Signal Desktop ──(CDP poll)──► Main Loop ──► Context Manager ─
   (`HumanReviewQueue.flag_for_review(force_pause=...)`); the loop also raises the
   logged score to `1.0` so the flag sorts to the top of the review queue. The
   guard is **precision-first**: the persona is meant to discuss money to stall
-  ("my account's frozen", "I can't send anything"), so money checks run sentence
-  by sentence, skip any sentence carrying a negation, and require the sending
-  verb and its money object to sit within a few words (an unrelated
-  co-occurrence like "send you a hug instead, money's too tight" does not trip
-  it). PII/identifier checks run on the whole reply, since those strings are
-  never legitimate to emit. The 13-digit floor on the card/account heuristic
-  sits above any phone number, so "call me at +1 555 123 4567" is left alone.
+  ("my account's frozen", "I can't send anything"), so money checks run clause
+  by clause and require the sending verb and its money object to sit within a
+  few words (an unrelated co-occurrence like "send you a hug instead, money's
+  too tight" does not trip it). Negation is **scoped to the verb it governs**,
+  not the whole clause: the guard blanks out only the span where a negation
+  *directly governs a sending verb* ("I can't **send**", "won't **wire**", "not
+  going to **buy**") — that is the refusal — and screens whatever commitment
+  remains. A negation aimed at some *other* verb therefore can no longer shield a
+  real commitment riding alongside it: "**don't worry** babe I'll **wire** the
+  500" and "I **can't wait** to **send** you the money" are now caught (an
+  earlier clause-level skip swallowed the whole sentence and let these through at
+  suspicion score ~0 — the worst-case miss). The `_NEG_BREAKER` set (future
+  lead-ins like "I'll", eager idioms like "can't wait"/"won't hesitate") marks
+  where a negation stops governing, so deflections ("I can't send", "no way I'm
+  sending") still pass while capitulations do not. PII/identifier checks run on
+  the whole reply, since those strings are never legitimate to emit: an SSN is
+  matched in any common shape (3-2-4 dashed/spaced/dotted, or a bare nine digits
+  when explicitly labelled "ssn"/"social"). The 13-digit floor on the
+  card/account heuristic sits above any phone number, so "call me at
+  +1 555 123 4567" is left alone.
 - **Deduplication must be time-independent _and_ durable.** When a Signal
   message has no stable DOM id, `SignalClient._message_fingerprint(sender,
   content)` derives a deterministic id so the same message is never answered
@@ -153,9 +166,13 @@ and the optional path overrides `DATA_DIR` / `LOG_DIR` / `BROWSER_USER_DATA_DIR`
 
 `pytest` covers the deterministic layers — models, prompt building, suspicion
 heuristics and LLM-result parsing, the content guard (recall: money commitments
-and PII are blocked; **precision**: ordinary chatter and money *deflections* are
-not, plus an adversarial corpus assertion that the dangerous reply is invisible
-to the suspicion checker so the block is attributable to the guard), context
+and PII are blocked — including "warm capitulations" where a refusal and a
+commitment share one comma-less breath, and an SSN in any common format;
+**precision**: ordinary chatter, money *deflections* and unlabelled phone/order
+numbers are not, plus a discriminator pinning that negation scope — not mere
+presence — decides safe vs. blocked, and an adversarial corpus assertion that
+the dangerous reply is invisible to the suspicion checker so the block is
+attributable to the guard), context
 compression, the database (including
 schema migration of older DBs, durable dedup, and the stats aggregates),
 persona building, phone normalization, message fingerprinting, the stats

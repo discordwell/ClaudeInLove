@@ -48,6 +48,19 @@ SAFE_REPLIES = [
     "i can't send money, gift cards, or anything else sorry",
     # "not <verb>" must read as a refusal, not a commitment.
     "i'm not sending any gift cards, my sister said that's a scam",
+    # A negation that directly governs the sending verb is a deflection and must
+    # stay safe, even with fillers between the negation and the verb, and even
+    # when there is no comma to split it off. These pin the *scoped* negation
+    # behaviour (the negation only neutralises the verb it governs).
+    "no way im sending you cash babe",
+    "i can't possibly send you any money right now",
+    "i won't be sending anything until we meet in person",
+    "i'm not able to wire money this week, everything's frozen",
+    "i don't think i should send money to be honest",
+    "i never agreed to send you a single dime",
+    "honestly i can't afford to send the money right now",
+    # A far-scoping "let alone" refusal must not be read as a commitment.
+    "i can't even afford my rent let alone send you money",
     # Verb and an unrelated money word co-occurring in one sentence: the verb
     # has a non-money object ("a hug"), so proximity keeps this safe.
     "let me send you a hug instead, money's too tight lol",
@@ -98,6 +111,17 @@ MONEY_COMMITMENTS = [
     "i shouldn't, but i'll venmo you the 200",
     # Bare amount after an unambiguous money verb.
     "i know i said i couldnt but for you ill wire the 500 today",
+    # Warm capitulation with NO delimiter between the hedge and the commitment:
+    # the negation governs a *different* verb ("don't worry", "can't wait", "never
+    # been more sure"), so it must not cancel the real send riding alongside it.
+    # Previously a clause-level negation skip swallowed the whole sentence and let
+    # these through scoring ~0 on the suspicion checker — the worst-case miss.
+    "dont worry babe ill wire the 500 today",
+    "dont worry ill send the cash tomorrow",
+    "i cannot wait to send you the money baby",
+    "ive never been more sure ill wire you 500 dollars",
+    "no worries ill just venmo you the 200 now",
+    "i wont hesitate to send you the money love",
 ]
 
 
@@ -114,6 +138,43 @@ def test_ssn_is_blocked(guard):
     result = guard.check("if you need it my ssn is 123-45-6789")
     assert not result.is_safe
     assert any("SSN" in v for v in result.violations)
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "my ssn is 123-45-6789",       # dashed
+        "my ssn is 123 45 6789",       # space-grouped
+        "my ssn is 123.45.6789",       # dot-grouped
+        "my ssn is 123456789",         # bare 9 digits, but labelled
+        "social security number 123456789 if you really need it",
+        "here's my social 123-45-6789",
+    ],
+)
+def test_ssn_in_any_common_format_is_blocked(guard, reply):
+    # A coerced victim typing their SSN without dashes (or with spaces/dots) is
+    # just as much a leak as the canonical 123-45-6789 form. The bare 9-digit
+    # run slips past both the separator pattern and the 13-digit length floor,
+    # so it is caught only when explicitly labelled "ssn"/"social".
+    result = guard.check(reply)
+    assert not result.is_safe, f"missed SSN: {reply!r}"
+    assert any("SSN" in v for v in result.violations)
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "you can reach me on 5551234567 babe",        # 10-digit phone, no label
+        "my order number was 100200300 from amazon",  # 9 digits, no SSN label
+        "call me anytime at +1 555 123 4567 ok?",     # phone groups 3-3-4, not 3-2-4
+    ],
+)
+def test_unlabelled_numbers_are_not_mistaken_for_ssn(guard, reply):
+    # Precision: an unlabelled 9/10-digit run (a phone or an order number) must
+    # not be blocked as an SSN — only the distinctive 3-2-4 grouping or an
+    # explicit "ssn"/"social" label counts.
+    result = guard.check(reply)
+    assert result.is_safe, f"false SSN positive on: {reply!r} -> {result.violations}"
 
 
 def test_credit_card_number_is_blocked(guard):
@@ -166,6 +227,16 @@ def test_negated_clause_does_not_mask_a_separate_committing_sentence(guard):
         "i can't do it through the bank. but i'll send you the cash instead."
     )
     assert not result.is_safe
+
+
+def test_negation_scope_is_the_discriminator(guard):
+    # The crux of the guard's negation handling: the *same* sending verb is safe
+    # or unsafe depending on whether the negation actually governs it. When the
+    # negation binds "send" itself, it's a refusal (safe); when it binds some
+    # other verb in the same breath ("worry"), the send is a real commitment
+    # (unsafe) — even with no comma to split the two apart.
+    assert guard.check("i can't send you the money babe").is_safe
+    assert not guard.check("dont worry babe i'll send you the money").is_safe
 
 
 def test_guard_result_reason_joins_violations(guard):

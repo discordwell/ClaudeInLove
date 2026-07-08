@@ -25,10 +25,15 @@ Design priority is **precision over recall for the money case.** The persona is
 *supposed* to talk about money in order to stall — "my account's frozen", "I
 can't send anything till payday", "I'd never wire money to someone I haven't
 met". Those deflections are the tool working as intended and must NOT trip the
-guard; only an *affirmative commitment to send* does. So money checks run
-sentence by sentence and skip any sentence carrying a negation. The
-PII/identifier checks are pattern-based on the whole reply — those strings are
-essentially never legitimate for the persona to emit, deflection or not.
+guard; only an *affirmative commitment to send* does. So money checks run clause
+by clause and, within a clause, blank out only the span where a negation
+*directly governs a sending verb* — the refusal — before screening what is left.
+That scoping is deliberate: a negation attached to some other verb ("**don't**
+worry, I'll **wire** the 500", "I **can't** **wait** to **send** you the money")
+must NOT cancel a real commitment riding alongside it, since that reply is
+casual enough to score ~0 on the suspicion checker and sail straight through.
+The PII/identifier checks are pattern-based on the whole reply — those strings
+are essentially never legitimate for the persona to emit, deflection or not.
 
 Pure and dependency-free (regex only), so it runs and is tested without a
 browser, exactly like :mod:`suspicion_checker`.
@@ -55,21 +60,46 @@ class GuardResult:
 class ContentGuard:
     """Screens an outgoing reply for hard-safety invariant violations."""
 
-    # --- Negation / deflection markers -------------------------------------
-    # A sentence carrying any of these is the persona *declining* to send (the
-    # desired behaviour), so its money signals are ignored. Apostrophes are
-    # normalised to ``'`` before matching, so only the straight form is listed.
-    # The ``not <verb>`` arm catches "I'm not sending any gift cards" etc.
-    _NEGATION = re.compile(
-        r"\b("
-        r"can'?t|can ?not|cannot|won'?t|will not|wouldn'?t|would not|"
-        r"don'?t|do not|didn'?t|did not|never|no way|unable|isn'?t|ain'?t|"
-        r"not\s+(?:gonna\s+|going\s+to\s+|able\s+to\s+)?"
-        r"(?:send|sending|wir(?:e|ing)|transfer(?:ring)?|pay(?:ing)?|"
-        r"deposit(?:ing)?|buy(?:ing)?|load(?:ing)?|venmo|zelle|paypal|giv(?:e|ing))|"
-        r"not (?:going|gonna|able|sure|gonna be)|"
-        r"wish i could|if i could|i'?d love to but"
-        r")\b",
+    # --- Negation scoped to the sending verb -------------------------------
+    # A deflection is the persona *declining* to send — "I can't send", "I won't
+    # wire", "I'm not going to buy", "I wish I could send but...". These must
+    # pass: they are the bot doing its job (stalling by talking about money).
+    #
+    # The earlier design skipped a whole clause whenever *any* negation token
+    # appeared in it. That over-suppressed: a negation governing some *other*
+    # verb — "**don't** worry babe I'll **wire** the 500", "I **can't** **wait**
+    # to **send** you the money" — wrongly cancelled a real commitment sharing
+    # the clause (no comma to split them), so the worst-case reply slipped
+    # through scoring 0.0 on the suspicion checker. Instead we now neutralise
+    # only the span where a negation *directly governs a sending verb*, and screen
+    # whatever commitment survives.
+    #
+    # ``_NEG_OPENER`` + a short gap + a ``_SEND_VERB`` is treated as a refusal
+    # and blanked out. The gap may not cross a ``_NEG_BREAKER``: a future
+    # commitment lead-in ("I'll", "imma") or an unambiguously *eager* idiom
+    # ("can't **wait** to send", "won't **hesitate** to send") means the negation
+    # is attached elsewhere and the send is a real promise, so it must stay
+    # visible. Apostrophes are normalised to ``'`` before matching.
+    _NEG_OPENER = (
+        r"(?:can'?t|cannot|can ?not|won'?t|will\s+not|wouldn'?t|would\s+not|"
+        r"don'?t|do\s+not|didn'?t|did\s+not|doesn'?t|isn'?t|aren'?t|ain'?t|"
+        r"shouldn'?t|should\s+not|couldn'?t|could\s+not|mustn'?t|shan'?t|"
+        r"never|no\s+way|unable|not|wish\s+i\s+could|if\s+i\s+could)"
+    )
+    _NEG_BREAKER = (
+        r"(?:wait|waiting|hesitate|hesitating|"
+        r"i'?ll|ill|imma|i'?ma|we'?ll|i\s+will|we\s+will)\b"
+    )
+    _SEND_VERB = (
+        r"(?:send(?:ing|s)?|sent|wire|wiring|wired|transfer(?:ring|red|s)?|"
+        r"pay(?:ing|s)?|paid|deposit(?:ing|ed|s)?|give|giving|gave|buy(?:ing|s)?|"
+        r"bought|load(?:ing|ed|s)?|reload|remit(?:ting|ted)?|venmo|zelle|paypal|"
+        r"cash\s?app|e-?transfer(?:red)?)"
+    )
+    _NEGATED_SEND = re.compile(
+        r"\b" + _NEG_OPENER + r"\b"
+        r"(?:\s+(?!" + _NEG_BREAKER + r")\w+(?:'\w+)?){0,6}?"
+        r"\s+" + _SEND_VERB + r"\b",
         re.IGNORECASE,
     )
 
@@ -86,18 +116,19 @@ class ContentGuard:
 
     # Reply is examined clause by clause. We split not just on sentence
     # terminators but also on commas and adversative conjunctions ("but",
-    # "though", ...), because a negation only suppresses *its own* clause — a
-    # "warm capitulation" packs a hedge and a commitment into one breath
-    # ("I shouldn't, but for you I'll send the money"), and the committing
-    # clause must still be screened on its own.
+    # "though", ...) so a deflection and a commitment that sit on opposite sides
+    # of a hedge — "I shouldn't, but for you I'll send the money" — are screened
+    # independently. Within a clause, a negation no longer suppresses the whole
+    # span (see ``_NEGATED_SEND``); it only blanks the verb it actually governs.
     _CLAUSE_SPLIT = re.compile(
         r"[.!?\n;,]+|\b(?:but|though|although|however)\b",
         re.IGNORECASE,
     )
 
     # --- Affirmative money-commitment signals ------------------------------
-    # Each is applied only to a non-negated clause. They are intentionally
-    # narrow: a *commitment to move funds*, not a mere mention of money. The
+    # Each is applied to a clause after its negated-send spans are blanked out.
+    # They are intentionally narrow: a *commitment to move funds*, not a mere
+    # mention of money. The
     # ``(?:\s+\w+){0,3}?`` bridge keeps the verb and its object within a few
     # words, so an unrelated co-occurrence — "send you a hug instead, money's
     # too tight" — does not trip it (the verb and "money" are 4+ words apart).
@@ -149,8 +180,19 @@ class ContentGuard:
     ]
 
     # --- Personal / financial identifiers (whole-reply) --------------------
-    # US Social Security number.
-    _SSN = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
+    # US Social Security number, grouped 3-2-4 by a dash, space or dot. The
+    # distinctive 3-2-4 shape keeps it off phone numbers (which group 3-3-4).
+    _SSN = re.compile(r"\b\d{3}[-. ]\d{2}[-. ]\d{4}\b")
+    # ...and an SSN volunteered as a bare 9-digit run *when explicitly labelled*
+    # ("my ssn is 123456789", "social security number 123456789"). The label is
+    # required because an unlabelled 9-digit run is too ambiguous (order numbers,
+    # etc.) to block on, but a labelled one is unmistakably PII and otherwise
+    # slips past both ``_SSN`` (no separators) and ``_LONG_NUMBER`` (needs 13+).
+    _SSN_LABELLED = re.compile(
+        r"\b(?:ssn|social(?:\s+security)?(?:\s+(?:number|num|no|#))?)\b"
+        r"[^\d]{0,12}\d{9}\b",
+        re.IGNORECASE,
+    )
     # Crypto wallet addresses (high precision).
     _CRYPTO_ADDR = [
         re.compile(r"\b0x[a-fA-F0-9]{40}\b"),          # Ethereum
@@ -183,17 +225,24 @@ class ContentGuard:
         text = reply.replace("’", "'")
         violations: List[str] = []
 
-        # Money commitment: clause by clause, ignoring deflection clauses.
+        # Money commitment: clause by clause. Within each clause, blank out the
+        # spans where a negation directly governs a sending verb (the persona
+        # *declining* — the desired behaviour) so a refusal can no longer mask a
+        # *separate* commitment made in the same breath, then screen whatever
+        # survives. The span is replaced with a hard separator (" ; ") rather
+        # than a space so a removed refusal can never let an earlier verb drift
+        # up against a later money word and read as a commitment.
         for clause in self._CLAUSE_SPLIT.split(text):
             s = clause.strip()
-            if not s or self._NEGATION.search(s):
+            if not s:
                 continue
-            if any(pat.search(s) for pat in self._MONEY_COMMIT):
+            screened = self._NEGATED_SEND.sub(" ; ", s)
+            if any(pat.search(screened) for pat in self._MONEY_COMMIT):
                 violations.append("reply appears to commit to sending money/payment")
                 break
 
         # Personal / financial identifiers: whole reply.
-        if self._SSN.search(text):
+        if self._SSN.search(text) or self._SSN_LABELLED.search(text):
             violations.append("reply contains an SSN-like number")
         if any(pat.search(text) for pat in self._CRYPTO_ADDR):
             violations.append("reply contains a crypto wallet address")

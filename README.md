@@ -98,7 +98,12 @@ conversation for human review, regardless of the suspicion score **or** the
 AI-suspicion flags, not hard-safety ones. The guard is precision-first: the
 persona is *supposed* to talk about money in order to stall ("my account's
 frozen", "I can't send anything till payday"), so deflections are left alone;
-only an affirmative commitment to send trips it.
+only an affirmative commitment to send trips it. Crucially, a negation only
+neutralizes the verb it actually governs — a refusal aimed elsewhere can't
+shield a real commitment made in the same breath, so a casual "don't worry babe,
+I'll wire the $500" (which scores ~0 on the AI-suspicion checker) is still
+caught. PII detection covers an SSN in any common format (dashed, spaced,
+dotted, or a bare nine digits when labelled "ssn"/"social").
 
 ## Review Flagged Conversations
 
