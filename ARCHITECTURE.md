@@ -121,24 +121,42 @@ Signal Desktop ──(CDP poll)──► Main Loop ──► Context Manager ─
   logged score to `1.0` so the flag sorts to the top of the review queue. The
   guard is **precision-first**: the persona is meant to discuss money to stall
   ("my account's frozen", "I can't send anything"), so money checks run clause
-  by clause and require the sending verb and its money object to sit within a
-  few words (an unrelated co-occurrence like "send you a hug instead, money's
-  too tight" does not trip it). Negation is **scoped to the verb it governs**,
-  not the whole clause: the guard blanks out only the span where a negation
-  *directly governs a sending verb* ("I can't **send**", "won't **wire**", "not
-  going to **buy**") — that is the refusal — and screens whatever commitment
-  remains. A negation aimed at some *other* verb therefore can no longer shield a
-  real commitment riding alongside it: "**don't worry** babe I'll **wire** the
-  500" and "I **can't wait** to **send** you the money" are now caught (an
-  earlier clause-level skip swallowed the whole sentence and let these through at
-  suspicion score ~0 — the worst-case miss). The `_NEG_BREAKER` set (future
-  lead-ins like "I'll", eager idioms like "can't wait"/"won't hesitate") marks
-  where a negation stops governing, so deflections ("I can't send", "no way I'm
-  sending") still pass while capitulations do not. PII/identifier checks run on
-  the whole reply, since those strings are never legitimate to emit: an SSN is
-  matched in any common shape (3-2-4 dashed/spaced/dotted, or a bare nine digits
-  when explicitly labelled "ssn"/"social"). The 13-digit floor on the
-  card/account heuristic sits above any phone number, so "call me at
+  by clause and require a sending verb and its money object to sit within a few
+  words (an unrelated co-occurrence like "send you a hug instead, money's too
+  tight" does not trip it). Negation is **scoped to the verb it governs**, not
+  the whole clause: the guard blanks out only the span where a negation — or a
+  *reported* request ("you keep asking me to send", "I'd rather X **than** send")
+  — governs a sending verb; that is the refusal, and whatever commitment remains
+  is screened. A negation aimed at some *other* verb therefore can no longer
+  shield a real commitment riding alongside it: "**don't worry** babe I'll
+  **wire** the 500" and "I **can't wait** to **send** you the money" are caught
+  (an earlier clause-level skip swallowed the whole sentence and let these
+  through at suspicion score ~0 — the worst-case miss). The `_NEG_BREAKER` set
+  (future lead-ins like "I'll", eager idioms like "can't wait"/"won't hesitate")
+  marks where a negation stops governing, so deflections ("I can't send", "no way
+  I'm sending") still pass while capitulations do not.
+- **Within that precision budget, commitment recall is deliberately broad**,
+  because a *missed* money commitment is the worst-case outcome and reads casual
+  enough to score ~0 on the suspicion checker. The survivor of the negation
+  blanking is matched against a wide family of "I'll move funds" forms rather
+  than just verb-then-money-object: generic hand-over verbs beside a money object
+  ("**make** the payment", "**put** the money in your account", "**cover** the
+  500 fee"), payment **rails** aimed at a recipient or reached by a sending verb
+  ("**venmo you** 200", "**western union it** to you", "do the **western union**
+  transfer"), buying/**getting** gift cards, bare amounts after an unambiguous
+  verb ("**wire** the 500", "**spot you** 400") or a money-terminal one
+  ("**sending you 500** now"), completion claims ("the money **is on its way**",
+  "**consider** the payment **done**", "the 500 **is yours**"), directional
+  deliveries ("**put 300 into your account**", "**you'll have the cash** by
+  tonight"), and funds-only verbs with a pronoun object ("**wired it** this
+  morning"). Two verbs are the same word on both sides of the line, so context
+  decides: "make **40k a year**" (income) vs "make **the payment**"; "you keep
+  asking me to **send**" (reported ask) vs "I'll **send** you the money"; "check
+  **my** paypal" (own account) vs "check **your** paypal" (theirs). PII/identifier
+  checks run on the whole reply, since those strings are never legitimate to
+  emit: an SSN is matched in any common shape (3-2-4 dashed/spaced/dotted, or a
+  bare nine digits when explicitly labelled "ssn"/"social"). The 13-digit floor
+  on the card/account heuristic sits above any phone number, so "call me at
   +1 555 123 4567" is left alone.
 - **Deduplication must be time-independent _and_ durable.** When a Signal
   message has no stable DOM id, `SignalClient._message_fingerprint(sender,
@@ -167,12 +185,17 @@ and the optional path overrides `DATA_DIR` / `LOG_DIR` / `BROWSER_USER_DATA_DIR`
 `pytest` covers the deterministic layers — models, prompt building, suspicion
 heuristics and LLM-result parsing, the content guard (recall: money commitments
 and PII are blocked — including "warm capitulations" where a refusal and a
-commitment share one comma-less breath, and an SSN in any common format;
-**precision**: ordinary chatter, money *deflections* and unlabelled phone/order
-numbers are not, plus a discriminator pinning that negation scope — not mere
-presence — decides safe vs. blocked, and an adversarial corpus assertion that
-the dangerous reply is invisible to the suspicion checker so the block is
-attributable to the guard), context
+commitment share one comma-less breath, a broad `BROADENED_COMMITMENTS` corpus of
+realistic capitulations grouped by the structure that used to defeat the guard —
+generic hand-over verbs, rails used as verbs, bare/"money-terminal" amounts,
+completion claims, directional deliveries, funds-only pronoun objects — and an
+SSN in any common format; **precision**: ordinary chatter, money *deflections*,
+*reported* requests ("you keep asking me to send"), "rather X than send" refusals,
+income statements, checking one's *own* payment app, and unlabelled phone/order
+numbers are not, plus discriminators pinning that *context* — not the mere
+presence of a money word/rail/sending verb — decides safe vs. blocked, and an
+adversarial corpus assertion that the dangerous reply is invisible to the
+suspicion checker so the block is attributable to the guard), context
 compression, the database (including
 schema migration of older DBs, durable dedup, and the stats aggregates),
 persona building, phone normalization, message fingerprinting, the stats

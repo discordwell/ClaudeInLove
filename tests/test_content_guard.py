@@ -65,6 +65,23 @@ SAFE_REPLIES = [
     # has a non-money object ("a hug"), so proximity keeps this safe.
     "let me send you a hug instead, money's too tight lol",
     "i sent you a photo of my garden earlier, did you see it?",
+    # Broadening the commitment patterns (below) must not cost precision: each of
+    # these mentions money, a rail, or a generic hand-over verb yet commits to
+    # nothing, so it must stay safe.
+    #   - a *reported* request (narrating / rebuffing the scammer's ask), which
+    #     carries a sending verb but is not the persona agreeing to anything:
+    "you keep asking me to send money and it's honestly upsetting",
+    "he wanted me to wire money for a flight but i said no",
+    "please stop asking me to send money, it's making me sad",
+    #   - a refusal framed as the *rejected* side of a "rather ... than":
+    "i'd rather buy a plane ticket than send money to some stranger's account",
+    #   - stating income, not offering to *make a payment* ("make 40k a year"):
+    "i make about 40k a year, comfortable but not rich",
+    #   - generic verbs (make/cover/do) under a negation are still a decline:
+    "i can't make the payment, my account is frozen",
+    "i can't cover that fee right now, i'm so sorry",
+    #   - checking one's *own* payment app is not a send:
+    "let me check my paypal, i think your message ended up there",
     # A phone number must not look like a card/account number.
     "call me anytime at +1 555 123 4567 ok?",
     "you can reach me on 5551234567 babe",
@@ -130,6 +147,99 @@ def test_money_commitments_are_blocked(guard, reply):
     result = guard.check(reply)
     assert not result.is_safe, f"missed commitment: {reply!r}"
     assert any("money" in v or "payment" in v for v in result.violations)
+
+
+# --- Broadened commitment recall --------------------------------------------
+# The earlier matcher only fired on a transfer verb *immediately* followed by a
+# money object, so a large family of realistic capitulations sailed straight
+# through — and because they read as perfectly casual, the suspicion checker
+# scored them ~0 too, so *nothing* caught them. Each entry below is one such
+# miss, grouped by the structure that used to defeat the guard. These are the
+# worst-case failure mode (an autonomous reply that agrees to send), so recall
+# here matters as much as the precision corpus above.
+BROADENED_COMMITMENTS = [
+    # generic hand-over verbs (make / put / drop / cover) beside a money object
+    "alright ill go ahead and make the payment tonight",
+    "ok baby i already put the money in your account",
+    "ill drop the cash in your account tonight",
+    "i can cover the 500 fee for you",
+    # a payment rail used as a verb, or reached by a sending verb
+    "okay ill western union it to you",
+    "okay fine, i will do the western union transfer tomorrow",
+    "just sent you the 200 on zelle",
+    # buying / *getting* the classic scam payout instruments
+    "fine ill get you the gift cards after work",
+    "ill go to walmart and get the steam cards for you",
+    # a bare amount after a money verb — unambiguous (spot/lend) or money-terminal
+    "sending you 500 now love",
+    "yes ok i can do 500 today",
+    "alright i can spot you 400 til payday",
+    "ill lend you the 500 just this once",
+    # a claim the transfer is already done / on its way / theirs
+    "consider the money sent babe",
+    "sure, consider it done, the 500 is yours",
+    "money's on its way babe dont worry",
+    # a directional delivery or a delivery promise aimed at the recipient
+    "ill have the funds to you by friday i promise",
+    "ok i put 300 into your account this morning",
+    "you'll have the cash by tonight i promise",
+    # a funds-only verb with a pronoun / "everything" object
+    "i went ahead and wired it this morning",
+    "ill transfer everything i have to you",
+    # telling them to check the rail the money supposedly landed in
+    "okay i sent it already, check your paypal",
+]
+
+
+@pytest.mark.parametrize("reply", BROADENED_COMMITMENTS)
+def test_broadened_commitments_are_blocked(guard, reply):
+    result = guard.check(reply)
+    assert not result.is_safe, f"missed commitment: {reply!r}"
+    assert any("money" in v or "payment" in v for v in result.violations)
+
+
+# --- Discriminators: the same verb, safe or unsafe by *context* -------------
+# These pin the precision/recall boundary on cases where the naive signal (a
+# money word, a rail, a sending verb) is present on both sides, so only the
+# surrounding structure separates a decline from a commitment.
+
+def test_income_statement_is_not_a_payment(guard):
+    # "make 40k a year" is income; "make the payment" is a commitment. The verb
+    # is identical — only the object tells them apart.
+    assert guard.check("i make about 40k a year, comfortable but not rich").is_safe
+    assert not guard.check("i'll make the payment first thing tomorrow").is_safe
+
+
+def test_reported_request_is_not_a_commitment(guard):
+    # Narrating or rebuffing the scammer's ask ("you keep asking me to send",
+    # "he wanted me to wire") carries a sending verb but is not the persona
+    # agreeing to send. A first-person promise still trips.
+    assert guard.check("you keep asking me to send money and it's upsetting").is_safe
+    assert guard.check("he wanted me to wire money but i refused").is_safe
+    assert not guard.check("okay i'll send you the money you keep asking for").is_safe
+
+
+def test_rather_than_send_is_a_refusal(guard):
+    # In "rather X than send money" the send is the *rejected* alternative; in
+    # "rather send money than X" it is the chosen one.
+    assert guard.check("i'd rather fly out to see you than send any money").is_safe
+    assert not guard.check(
+        "i'd rather send you the money than watch you struggle"
+    ).is_safe
+
+
+def test_bare_amount_needs_a_money_context(guard):
+    # A bare number reads as cash only next to a money verb and a money-terminal
+    # cue; romantic hyperbole trailing a content noun ("100 reasons") stays safe.
+    assert guard.check("i'll send you the 100 reasons i love you").is_safe
+    assert not guard.check("i'll send you 500 tonight babe").is_safe
+
+
+def test_checking_own_app_is_safe_but_directing_them_is_not(guard):
+    # Checking *my own* payment app is benign; telling *them* the money is in
+    # *their* app is a completion claim.
+    assert guard.check("let me check my paypal for your message").is_safe
+    assert not guard.check("check your paypal babe, it's there").is_safe
 
 
 # --- PII / identifiers: must be blocked -------------------------------------

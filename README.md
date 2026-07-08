@@ -98,12 +98,25 @@ conversation for human review, regardless of the suspicion score **or** the
 AI-suspicion flags, not hard-safety ones. The guard is precision-first: the
 persona is *supposed* to talk about money in order to stall ("my account's
 frozen", "I can't send anything till payday"), so deflections are left alone;
-only an affirmative commitment to send trips it. Crucially, a negation only
-neutralizes the verb it actually governs — a refusal aimed elsewhere can't
-shield a real commitment made in the same breath, so a casual "don't worry babe,
-I'll wire the $500" (which scores ~0 on the AI-suspicion checker) is still
-caught. PII detection covers an SSN in any common format (dashed, spaced,
-dotted, or a bare nine digits when labelled "ssn"/"social").
+only an affirmative commitment to send trips it. A negation only neutralizes the
+verb it actually governs — a refusal aimed elsewhere can't shield a real
+commitment made in the same breath, so a casual "don't worry babe, I'll wire the
+$500" (which scores ~0 on the AI-suspicion checker) is still caught.
+
+Within that precision budget the commitment side is deliberately **broad**,
+because a missed money commitment is the worst-case failure. Beyond the obvious
+"I'll send you the money", the guard also catches capitulations phrased as
+generic hand-over verbs ("make the payment", "put the money in your account"),
+payment rails used as verbs ("western union it to you", "do the western union
+transfer"), *getting* gift cards, bare amounts ("sending you 500 now", "spot you
+400"), completion claims ("the money's on its way", "the 500 is yours"),
+directional deliveries ("put 300 into your account", "you'll have the cash by
+tonight"), and "wired it this morning". Context — not the mere presence of a
+money word — decides: "make 40k a year" (income), "you keep asking me to send"
+(the scammer's ask), "I'd rather fly out than send money" (a refusal), and
+"check *my* paypal" all stay safe. PII detection covers an SSN in any common
+format (dashed, spaced, dotted, or a bare nine digits when labelled
+"ssn"/"social").
 
 ## Review Flagged Conversations
 
@@ -156,8 +169,10 @@ pytest
 ```
 
 The tests cover the deterministic logic (models, prompts, suspicion scoring,
-the content-guard money/PII checks — both recall and precision so deflections
-aren't blocked — context compression, database + schema migration, persona
+the content-guard money/PII checks — both broad recall across realistic
+capitulations and precision so deflections, reported requests, income
+statements and "rather-than" refusals aren't blocked — context compression,
+database + schema migration, persona
 building, phone normalization, message deduplication — including the durable
 cross-restart check — the engagement-stats aggregation, and pause state) as
 well as the main-loop orchestration end-to-end with the browser clients faked
