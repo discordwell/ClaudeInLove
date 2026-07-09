@@ -185,6 +185,19 @@ class ClaudeInLove:
                 log_status(f"Skipping duplicate message from {scammer.id[:8]}")
                 return
 
+            # Build the conversation context from prior turns *before* this
+            # inbound message is persisted. ``build_full_prompt`` receives the
+            # current message separately (as ``incoming_message``) and appends it
+            # as the trailing "Them:" line, so if it were already stored it would
+            # also show up inside the "Recent conversation" block — the model
+            # would see the same message twice, wasting tokens and reading oddly.
+            # Fetching context first keeps ``messages`` to history only; the
+            # message is stored just below and so appears in *future* turns'
+            # context as normal.
+            messages, summary = await self.context_manager.get_compressed_context(
+                scammer.id, max_tokens=3000
+            )
+
             # Store incoming message
             stored_msg = await self.db.add_message(
                 scammer_id=scammer.id,
@@ -200,11 +213,6 @@ class ClaudeInLove:
             is_ai_probe = self.suspicion_checker.quick_check(msg.content)
             if is_ai_probe:
                 log_status(f"AI test detected from {scammer.id[:8]}")
-
-            # Get conversation context
-            messages, summary = await self.context_manager.get_compressed_context(
-                scammer.id, max_tokens=3000
-            )
 
             # Build prompt
             prompt = build_full_prompt(

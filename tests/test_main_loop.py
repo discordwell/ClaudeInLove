@@ -110,6 +110,33 @@ async def test_happy_path_sends_and_persists_both_messages(db, monkeypatch):
     assert await db.get_unreviewed_flags() == []
 
 
+async def test_prompt_does_not_duplicate_the_incoming_message(db, monkeypatch):
+    # The current message is passed to the prompt separately (as the trailing
+    # "Them:" line). It must NOT also be echoed inside the "Recent conversation"
+    # history block — that only happens if the message is persisted before the
+    # context is built. Prior history must still be present.
+    chatgpt = FakeChatGPT("ok sure that sounds fun")
+    app = make_app(db, monkeypatch, chatgpt=chatgpt)
+
+    scammer = await db.get_or_create_scammer(Platform.SIGNAL, SENDER, "Romeo")
+    await db.add_message(
+        scammer.id, MessageDirection.INBOUND, "hi there beautiful"
+    )
+    await db.add_message(
+        scammer.id, MessageDirection.OUTBOUND, "hey you how are you"
+    )
+
+    current = "so what did you get up to today"
+    await app.handle_incoming_message(incoming(current))
+
+    prompt = chatgpt.prompts[0]
+    # Exactly once: only the trailing "Them:" line, not also in the history block.
+    assert prompt.count(current) == 1
+    # Prior turns are still included as context.
+    assert "hi there beautiful" in prompt
+    assert "hey you how are you" in prompt
+
+
 async def test_paused_scammer_is_skipped_entirely(db, monkeypatch):
     signal = FakeSignal()
     app = make_app(db, monkeypatch, signal=signal)

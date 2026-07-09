@@ -2,6 +2,30 @@
 
 ## Session Summaries (newest first)
 
+### 2026-07-09T00:00:00Z — Maintenance pass: stop duplicating the incoming message in every prompt
+Focused correctness fix in the core reply-generation path (suite 217 → 218).
+`main_loop.handle_incoming_message` stored the inbound message **before**
+building the LLM context, but `build_full_prompt` also appends the current
+message separately as the trailing `Them:` line. Result: *every* generated
+reply saw the scammer's latest message **twice** — once inside the "Recent
+conversation" history block and once as the final line — wasting tokens and
+feeding the model an odd doubled context (the opposite of the human-like input
+the tool wants, since `chatgpt_client` starts a fresh chat per turn).
+
+- **Reproduced first**: a standalone script confirmed the current message
+  appeared 2× in the assembled prompt.
+- **Fix**: fetch `get_compressed_context(...)` *before* `add_message(...)`, so
+  `messages` holds prior turns only; the current message is still stored (just
+  after) and so shows up in *future* turns' context as normal. No change to
+  `build_full_prompt`, DB schema, or send/flag ordering.
+- **Regression test** (`test_prompt_does_not_duplicate_the_incoming_message`)
+  inspects the prompt handed to the fake ChatGPT: asserts the current message
+  appears exactly once and prior history is retained. Proven to **fail** on the
+  old store-then-fetch order and **pass** on the fix.
+
+Verified: `pytest` → 218 passed. Not pushed (orchestrator pushes after its
+safety check).
+
 ### 2026-06-24T00:00:00Z — Maintenance pass: enforce "never send money/PII" in code (ContentGuard)
 One cohesive safety improvement (suite 99 → 158, +59). Closed the biggest latent
 risk in the system: the project's central invariant — *"waste time, never send
